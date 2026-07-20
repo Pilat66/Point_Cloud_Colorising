@@ -13,11 +13,12 @@ Two modes:
 
 **Scan** — each lidar sweep coloured from the cameras, live:
 
-![scan colourisation](media/scan_colorise.gif)
+<img width="640" height="250" alt="scan_colorise" src="https://github.com/user-attachments/assets/2a585200-6eb8-4f87-ade6-46ab152d2ee0" />
 
 **Map** — a fixed map colouring in as the platform drives through:
 
-![map colourisation](media/map_colorise.gif)
+<img width="640" height="250" alt="map_colorise" src="https://github.com/user-attachments/assets/035d8c65-3009-4f38-b5ed-3f27e1649512" />
+
 
 Intrinsics, distortion and extrinsics all come from `configs/calibration.yaml`.
 Nothing is read from the TF tree.
