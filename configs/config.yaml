@@ -1,90 +1,131 @@
-%YAML:1.0
+# Point cloud colourisation config.
+#
+# Plain YAML, parsed with yaml-cpp. Do NOT add a "%YAML:1.0" header — that is
+# the OpenCV FileStorage dialect, and OpenCV's parser cannot read
+# configs/calibration.yaml anyway (it rejects the nested matrix lists under
+# cam0..cam3). Nothing here is looked up from the TF tree; every extrinsic comes
+# from calibration.yaml.
 
-<<<<<<< HEAD
-# File paths
-map_pcd_path: /home/shu/Downloads/LOAM/GlobalMap.pcd
-save_pcd_path: ./colored_map.pcd  # only one entry
-keep_uncolored_points: 1
-
-# Topics
-image_topic_right: /right/image_raw/compressed
-image_topic_left: /left/image_raw/compressed
-odom_topic: /lio_sam/mapping/path
-output_topic: /colorised_points
-pointcloud_topic: /ouster/points
-
-# Output settings
-min_color_frames: 3
-max_lidar_z: 1.5  # meters, maximum Z value for lidar points to be considered
-# Synchronisation parameters
-max_time_offset: 0.05         # seconds
-initial_startup_delay: 0.1    # seconds
-
-# Right camera
-distortion_coeffs_right: [-0.04345139283609733, 0.019439878275353862, -0.03544505860721041, 0.022121647569599227]
-distortion_model_right: equidistant
-intrinsics_right: [1059.6087870662222, 1059.5973705610731, 1050.3552896004385, 731.3912426749002]
-resolution_right: [2048, 1536] 
-T_lidar_camera_right: 
-  - [-0.692832, -0.00931471, 0.721038, 0.1525]
-  - [-0.721098, 0.00812054, -0.692785, -0.149126]
-  - [0.000597876, -0.999924, -0.012343, -0.11506]
-  - [0.0, 0.0, 0.0, 1.0]
-
-# Left camera
-distortion_coeffs_left: [-0.041736301331338786, 0.01166417790504481, -0.011437286832906436, 0.0033946415180739157]
-distortion_model_left: equidistant
-intrinsics_left: [1048.498526504792, 1048.4052212551244, 1061.9662410412484, 704.0318680976642]
-resolution_left: [2048, 1536]
-T_lidar_camera_left: 
-  - [0.712262, -0.00354587, 0.701905, 0.16716]
-  - [-0.701562, -0.0352494, 0.711736, 0.132285]
-  - [0.022218, -0.999372, -0.0275945, -0.125028]
-  - [0.0, 0.0, 0.0, 1.0]
-=======
-# ── File paths ────────────────────────────────────────────────────────────────
-save_pcd_path:  $(find point_cloud_projection)/PCD/Color.pcd
-map_pcd_path:   $(find point_cloud_projection)/PCD/GlobalMap.pcd
-keep_uncolored_points: 0
-
-# ── Topics ────────────────────────────────────────────────────────────────────
-# NOTE: /right and /left image topics are not present in the recorded bag.
-#       Using /forwardRight and /forwardLeft which have both image and camera_info.
-image_topic_right: /forwardRight/image_raw/compressed
-image_topic_left:  /forwardLeft/image_raw/compressed
-output_topic:      /colorised_points
-pointcloud_topic:  /ouster/points
 calibration_path: $(find point_cloud_projection)/configs/calibration.yaml
-# true  = use hardcoded values from configs/calibration.yaml
-# false = look up extrinsics from TF tree at runtime
-use_calibration_file: true
-imu_topic:  /ms/imu/data
-imu_frame:  imu_link
-odom_topic: /lio_sam/mapping/odometry
-base_frame: "base_link"
 
-# ── CameraInfo topics (intrinsics + distortion sourced from here at runtime) ──
-camera_info_topic_right: /forwardRight/camera_info
-camera_info_topic_left:  /forwardLeft/camera_info
+# Key in calibration.yaml giving the IMU pose relative to the lidar. Only the
+# rotation block is used, by compensation_mode: imu.
+imu_extrinsic_key: T_imu_link_os_sensor
 
-# ── TF frame IDs (extrinsics looked up via tf2 at runtime) ───────────────────
-# lidar_frame must match the frame_id broadcast in /tf or /tf_static
-lidar_frame: os_sensor
-# camera frames are read automatically from the CameraInfo header.frame_id,
-# so no need to specify them here.
+# ── Topics ───────────────────────────────────────────────────────────────────
+pointcloud_topic: /ouster/points
+imu_topic:        /ms/imu/data
+odom_topic:       /lio_sam/mapping/odometry   # any nav_msgs/Odometry; used by compensation_mode: odom
+output_topic:     /colorised_points
 
-# ── Output settings ───────────────────────────────────────────────────────────
-min_color_frames: 3
-max_lidar_z: 100        # metres, maximum Z value for lidar points to be coloured
+# ── Cameras ──────────────────────────────────────────────────────────────────
+# Start with the two forward-facing cameras; they overlap, share a clean
+# extrinsic to the lidar, and are the cheapest thing to validate against.
+# Adding /left and /right later is just two more entries here — nothing else
+# in the code is camera-count specific.
+#
+#   intrinsics_key  block in calibration.yaml holding intrinsics / distortion /
+#                   resolution. cam1 = forwardLeft, cam2 = forwardRight.
+#   extrinsic_key   4x4 transform in calibration.yaml. Kalibr's T_A_B means
+#                   "A from B", so T_os_sensor_<cam> is lidar-from-camera —
+#                   which is what extrinsic_is_lidar_from_cam: true declares.
+cameras:
+  - name:           forwardLeft
+    image_topic:    /forwardLeft/image_raw/compressed
+    intrinsics_key: cam1
+    extrinsic_key:  T_os_sensor_forwardLeft_cam
+    extrinsic_is_lidar_from_cam: true
 
-# ── Synchronisation parameters ────────────────────────────────────────────────
-max_time_offset:       0.05    # seconds
-initial_startup_delay: 0.1     # seconds
+  - name:           forwardRight
+    image_topic:    /forwardRight/image_raw/compressed
+    intrinsics_key: cam2
+    extrinsic_key:  T_os_sensor_forwardRight_cam
+    extrinsic_is_lidar_from_cam: true
 
-# ── REMOVED (now sourced at runtime) ─────────────────────────────────────────
-# distortion_coeffs_right / left   -> /forwardRight/camera_info  D[]
-# distortion_model_right / left    -> /forwardRight/camera_info  distortion_model
-# intrinsics_right / left          -> /forwardRight/camera_info  K[]
-# resolution_right / left          -> /forwardRight/camera_info  width / height
-# T_lidar_camera_right / left      -> tf2 lookup: os_sensor -> camera frame
->>>>>>> 63209a76e848815144b08cf14641af794e33ba63
+# ── Fisheye edge rejection ───────────────────────────────────────────────────
+# These cameras are equidistant (fisheye) at 2048x1536. Near the image border
+# the projection is both optically soft and numerically ill-conditioned, so
+# colour sampled there is unreliable. Two independent controls, applied together
+# — a point must pass both. Set per-camera to override.
+#
+# edge_margin_px      Pixels trimmed from every image edge. Purely 2D.
+#                       0    keep the whole frame
+#                       60   trim the softest border           (mild)
+#                       150  clearly conservative              (recommended start)
+#                       300  aggressive, keeps only the centre
+#
+# max_view_angle_deg  Half-angle from the optical axis beyond which a point is
+#                     rejected, applied in 3D before projection. This is the
+#                     more principled knob: it bounds incidence angle directly
+#                     rather than depending on where the fisheye happens to map
+#                     a ray. These lenses cover roughly ±90 deg.
+#                       90   accept everything the lens sees
+#                       75   drop the outer ring               (recommended start)
+#                       60   conservative
+#                       45   centre only, near-pinhole quality
+#
+# min_camera_dist     Metres. Points nearer than this to the camera centre are
+#                     left uncoloured. Close geometry is where the fisheye model
+#                     is least accurate, and where a small extrinsic or timing
+#                     error displaces the projected point furthest - so colour
+#                     sampled there is the least trustworthy. Measured as
+#                     distance from the camera centre, not depth along the
+#                     optical axis: on a fisheye a point 1 m off to the side is
+#                     just as close, and just as badly modelled, as one 1 m
+#                     straight ahead.
+#                       0    colour everything
+#                       1.0  drop only the worst
+#                       2.0  recommended
+#                       3.0  conservative, costs noticeable coverage
+edge_margin_px:     150
+max_view_angle_deg: 75
+min_camera_dist:    2.0
+
+# ── Timestamp-offset compensation ────────────────────────────────────────────
+# The cameras are not hardware-synchronised with the lidar. In the reference bag
+# (easy_AprilAdd_tffix.bag) the images are consistently ~22 ms older than the
+# sweep they get matched to, which is enough to smear colour across edges while
+# the platform is moving.
+#
+#   none   Static extrinsic only. Baseline — use it to see what the offset costs.
+#   imu    Rotation-only correction from the /ms/imu/data AHRS quaternion,
+#          SLERP-interpolated. Always available, no SLAM required. Cannot
+#          recover translation: an orientation-only IMU carries no velocity.
+#   odom   Full 6-DoF correction from the odometry topic (SLERP + position
+#          interpolation). More accurate while translating; needs odometry to
+#          be available for the interval in question.
+compensation_mode: imu
+
+max_time_offset:       0.05   # s, widest camera/lidar pairing accepted
+initial_startup_delay: 0.5    # s, buffer fill before processing starts
+
+# ── Occlusion rejection ──────────────────────────────────────────────────────
+# Z-buffer over the projected points. Without it a wall and everything behind it
+# land on the same pixels and all get painted with the wall's colour. This
+# matters most for map colourisation, where the full map is projected at once.
+occlusion_check:     true
+occlusion_cell_px:   4.0    # z-buffer cell size; larger = stricter, coarser
+occlusion_depth_tol: 0.3    # m, depth spread tolerated within one cell
+
+# ── Output ───────────────────────────────────────────────────────────────────
+keep_uncolored_points: false  # true = keep uncoloured points as black
+max_lidar_z:           100    # m, height gate in the lidar frame (ColoriseScan)
+
+# ── Map colourisation (ColoriseMap) ──────────────────────────────────────────
+# You supply two things, and they must come from the same run and agree with
+# each other. How you produce them is up to you - any SLAM or survey source.
+#
+#   map_pcd_path   point cloud map (PCD, XYZI) in the map frame
+#   odom_csv_path  timestamped poses of the LIDAR in that same frame, as
+#                  time,x,y,z,qx,qy,qz,qw  (one per line, header row optional)
+#
+map_pcd_path:  $(find point_cloud_projection)/PCD/SurfMap.pcd
+odom_csv_path: $(find point_cloud_projection)/PCD/odometry.csv
+save_pcd_path: $(find point_cloud_projection)/PCD/ColouredMap.pcd
+
+min_color_frames: 2     # observations required before a point is kept (1 = any)
+map_max_range:    20.0  # m, cull radius around the camera before projecting
+
+# How often the accumulating coloured map is republished, in frames. Lower gives
+# a smoother fill-in in RViz at the cost of resending the whole cloud more often.
+map_publish_every_n: 5

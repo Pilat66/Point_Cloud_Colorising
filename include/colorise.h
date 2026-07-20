@@ -2,38 +2,38 @@
 #define COLORISE_H
 
 #include <ros/ros.h>
+#include <ros/package.h>
 #include <sensor_msgs/PointCloud2.h>
 #include <sensor_msgs/CompressedImage.h>
-#include <nav_msgs/Path.h>
-#include <opencv2/opencv.hpp>
+#include <sensor_msgs/Imu.h>
+#include <nav_msgs/Odometry.h>
+
 #include <eigen3/Eigen/Dense>
-#include <opencv2/core/eigen.hpp>
+#include <opencv2/opencv.hpp>
+
 #include <pcl_ros/point_cloud.h>
 #include <pcl/point_types.h>
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl/io/pcd_io.h>
-#include <deque>
-#include <limits>
-#include <map>
 #include <pcl/filters/filter.h>
+// PointXYZRGBIntensity is a custom point type, so the filter templates are not
+// pre-instantiated in libpcl_filters — pull in the implementation header.
 #include <pcl/filters/impl/filter.hpp>
-<<<<<<< HEAD
-=======
-#include <tf2_ros/transform_listener.h>
-#include <tf2_ros/buffer.h>
-#include <tf2_eigen/tf2_eigen.h>
-#include <sensor_msgs/CameraInfo.h>
-#include <sensor_msgs/Imu.h>
-#include <boost/optional.hpp>
-#include <nav_msgs/Odometry.h>
-#include <ros/package.h>
 
+#include <deque>
+#include <functional>
+#include <limits>
+#include <string>
+#include <vector>
 
->>>>>>> 63209a76e848815144b08cf14641af794e33ba63
+#include "calibration.h"
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Point type: Ouster layout plus an RGB field.
+// ─────────────────────────────────────────────────────────────────────────────
 struct PointXYZRGBIntensity {
     PCL_ADD_POINT4D;
-    float intensity;
+    float         intensity;
     std::uint32_t t;
     std::uint16_t reflectivity;
     std::uint16_t ring;
@@ -44,240 +44,179 @@ struct PointXYZRGBIntensity {
 } EIGEN_ALIGN16;
 
 POINT_CLOUD_REGISTER_POINT_STRUCT(PointXYZRGBIntensity,
-                                (float, x, x)
-                                (float, y, y)
-                                (float, z, z)
-                                (float, intensity, intensity)
-                                (std::uint32_t, t, t)
+                                (float,         x,            x)
+                                (float,         y,            y)
+                                (float,         z,            z)
+                                (float,         intensity,    intensity)
+                                (std::uint32_t, t,            t)
                                 (std::uint16_t, reflectivity, reflectivity)
-                                (std::uint16_t, ring, ring)
-                                (std::uint16_t, ambient, ambient)
-                                (std::uint32_t, range, range)
-                                (std::uint32_t, rgb, rgb)
+                                (std::uint16_t, ring,         ring)
+                                (std::uint16_t, ambient,      ambient)
+                                (std::uint32_t, range,        range)
+                                (std::uint32_t, rgb,          rgb)
 )
 
-struct PointKey {
-    float x, y, z;
-    bool operator<(const PointKey& other) const {
-        if (x != other.x) return x < other.x;
-        if (y != other.y) return y < other.y;
-        return z < other.z;
-    }
+// ─────────────────────────────────────────────────────────────────────────────
+// Timestamp-offset compensation mode.
+//
+// The camera and lidar are not hardware-synchronised: in the reference bag the
+// images are consistently ~22 ms older than the lidar sweep they get matched
+// to. Projecting without correcting for that smears colour across edges
+// whenever the platform is moving.
+//
+//   NONE : no compensation, static extrinsic only (baseline / debugging).
+//   IMU  : rotation-only correction from the AHRS quaternion (SLERP between
+//          IMU samples). Cheap, always available, and captures the dominant
+//          error for a platform that is mostly rotating. It cannot recover
+//          translation, because orientation-only IMU output carries no velocity.
+//   ODOM : full 6-DoF correction from the odometry trajectory (SLERP + linear
+//          interpolation of position). More accurate while translating, but
+//          only usable where odometry exists.
+// ─────────────────────────────────────────────────────────────────────────────
+enum class CompMode { NONE, IMU, ODOM };
+
+CompMode parseCompMode(const std::string& s);
+std::string compModeName(CompMode m);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Parameters shared by both nodes, loaded from configs/config.yaml.
+// ─────────────────────────────────────────────────────────────────────────────
+struct CommonParams {
+    std::string calibration_path;
+    std::vector<CameraCalib> cameras;
+
+    // IMU-frame rotation relative to the lidar, from calibration.yaml.
+    Eigen::Matrix3d R_imu_lidar = Eigen::Matrix3d::Identity();
+
+    std::string pointcloud_topic;
+    std::string imu_topic;
+    std::string odom_topic;
+    std::string output_topic;
+
+    double   max_time_offset       = 0.05;
+    double   initial_startup_delay = 0.1;
+    bool     keep_uncolored_points = false;
+    double   max_lidar_z           = 100.0;
+    CompMode compensation_mode     = CompMode::IMU;
+
+    // Occlusion rejection (z-buffer). Essential for map colourisation, where a
+    // wall and everything behind it project to the same pixels.
+    bool   occlusion_check     = true;
+    double occlusion_cell_px   = 4.0;
+    double occlusion_depth_tol = 0.3;
+
+    // Map node
+    std::string map_pcd_path;
+    std::string odom_csv_path;
+    std::string save_pcd_path;
+    int         min_color_frames = 1;
+    double      map_max_range    = 30.0;
+    // How often the accumulating coloured map is republished. Lower = smoother
+    // fill-in in RViz, at the cost of resending the whole cloud more often.
+    int         map_publish_every_n = 5;
 };
 
-class PointCloudColorizer {
+void loadCommonParams(const std::string& config_path, CommonParams& p);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Projection core.
+//
+// Projects the given points into one camera and reports each accepted point
+// through `sink(point_index, packed_rgb)`.
+//
+// `T_cam_from_points` maps the points from whatever frame they are in straight
+// into the camera frame:
+//   ColoriseScan : camera-from-lidar (static extrinsic * motion compensation)
+//   ColoriseMap  : (T_world_lidar * T_lidar_cam)^-1
+//
+// `candidates` lists the indices into P3 to consider — the height gate for
+// scans, the kd-tree range cull for the map. It is always explicit: an "empty
+// means all" convention would silently project everything on the frame where a
+// filter happened to reject every point, which is exactly backwards.
+// ─────────────────────────────────────────────────────────────────────────────
+void projectAndSample(const std::vector<cv::Point3f>& P3,
+                      const std::vector<int>&         candidates,
+                      const cv::Mat&                  img,
+                      const CameraCalib&              cam,
+                      const Eigen::Matrix4d&          T_cam_from_points,
+                      bool                            occlusion_check,
+                      double                          occlusion_cell_px,
+                      double                          occlusion_depth_tol,
+                      const std::function<void(int, std::uint32_t)>& sink);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// IMU orientation buffer (AHRS quaternion, SLERP-interpolated).
+// ─────────────────────────────────────────────────────────────────────────────
+class ImuBuffer {
 public:
-    explicit PointCloudColorizer(ros::NodeHandle& nh);
-
-<<<<<<< HEAD
-    void runMapNode();
-    void saveFinalMap();
-    void cloudCallback(const sensor_msgs::PointCloud2ConstPtr& msg);
-    void imgRightCallback(const sensor_msgs::CompressedImageConstPtr& msg);
-    void imgLeftCallback(const sensor_msgs::CompressedImageConstPtr& msg);
-    void trySyncAndProcess();
-=======
-    // -----------------------------------------------------------------------
-    // Map node
-    // -----------------------------------------------------------------------
-    void runMapNode();
-    void saveFinalMap();
->>>>>>> 63209a76e848815144b08cf14641af794e33ba63
-    void pathCallback(const nav_msgs::PathConstPtr& msg);
-    void mapCallback(const sensor_msgs::PointCloud2ConstPtr& msg);
-    bool lookupPose(const ros::Time& t, Eigen::Matrix4d& T_out);
-    cv::Vec3b rgbToVec3b(uint32_t rgb);
-    uint32_t vec3bToRgb(const cv::Vec3b& c);
-    cv::Vec3b averageColor(const std::vector<cv::Vec3b>& colors);
-    void colorizeFromPCD(const ros::TimerEvent&);
-<<<<<<< HEAD
-    
-    void callback(const sensor_msgs::PointCloud2ConstPtr& cloud_msg,
-                  const sensor_msgs::CompressedImageConstPtr& img_right_msg,
-                  const sensor_msgs::CompressedImageConstPtr& img_left_msg);
-
-    void colorize(const std::vector<cv::Point3f>& P3, const cv::Mat& img,
-                  const Eigen::Matrix4d& T_camera_lidar, const cv::Mat& K, const cv::Mat& dist,
-                  const std::string& distortion_model, int width, int height,
-                  bool is_right, bool mirror_u,
-                  pcl::PointCloud<PointXYZRGBIntensity>::Ptr& out,
-                  const pcl::PointCloud<PointXYZRGBIntensity>::Ptr& in);
-
-=======
-
-    // -----------------------------------------------------------------------
-    // Scan colorisation
-    // -----------------------------------------------------------------------
-    void cloudCallback(const sensor_msgs::PointCloud2ConstPtr& msg);
-    void imgRightCallback(const sensor_msgs::CompressedImageConstPtr& msg);
-    void imgLeftCallback(const sensor_msgs::CompressedImageConstPtr& msg);
-    void trySyncAndProcess();
-
-    void camInfoRightCallback(const sensor_msgs::CameraInfoConstPtr& msg);
-    void camInfoLeftCallback(const sensor_msgs::CameraInfoConstPtr& msg);
-
-    // Main processing callback — timestamps passed explicitly so each camera
-    // can be compensated to its own capture time.
-    void callback(const sensor_msgs::PointCloud2ConstPtr& cloud_msg,
-                  const sensor_msgs::CompressedImageConstPtr& img_right_msg,
-                  const sensor_msgs::CompressedImageConstPtr& img_left_msg,
-                  ros::Time t_lidar,
-                  ros::Time t_cam);
-
-    // Project P3 (lidar-frame points at t_lidar) into img using the unified
-    // T_cam_from_lidar transform (motion-compensated + extrinsic in one step).
-    // Project P3 into img using T_cam_from_points (motion-compensated + extrinsic).
-    // source_z_max: filters points by their Z in the SOURCE frame before projection.
-    //   ColoriseScan: pass max_lidar_z_ (lidar-frame height filter).
-    //   ColoriseMap:  omit or pass FLT_MAX — world-frame Z is not meaningful here,
-    //                 the camera-depth check (pt_cam.z > 0) handles occlusion instead.
-    void colorize(const std::vector<cv::Point3f>& P3,
-                  const cv::Mat& img,
-                  const Eigen::Matrix4d& T_cam_from_points,
-                  const cv::Mat& K,
-                  const cv::Mat& dist,
-                  const std::string& distortion_model,
-                  int width, int height,
-                  pcl::PointCloud<PointXYZRGBIntensity>::Ptr& out,
-                  const pcl::PointCloud<PointXYZRGBIntensity>::Ptr& in,
-                  float source_z_max = std::numeric_limits<float>::max());
-
-    // -----------------------------------------------------------------------
-    // Motion compensation — odometry path
-    //
-    // Computes the full T_cam(t_cam) <- lidar(t_lidar) transform by
-    // interpolating odometry at both timestamps and composing with static TF
-    // extrinsics for both the lidar and the named camera frame.
-    // Returns false if odometry or TF data are unavailable.
-    // -----------------------------------------------------------------------
-    bool computeCamFromLidar(ros::Time t_lidar, ros::Time t_cam,
-                             const std::string& cam_frame,
-                             Eigen::Matrix4d& T_out);
-
-    // -----------------------------------------------------------------------
-    // Motion compensation — IMU path
-    //
-    // Computes T_cam(t_cam) <- lidar(t_lidar) using AHRS SLERP for rotation
-    // and double-integrated gravity-removed accelerometer for translation,
-    // then composes with the static camera extrinsic from TF.
-    // Returns false if IMU data or TF extrinsics are unavailable.
-    // -----------------------------------------------------------------------
-    bool computeCamFromLidarIMU(ros::Time t_lidar, ros::Time t_cam,
-                                const std::string& cam_frame,
-                                Eigen::Matrix4d& T_out);
-
-    // -----------------------------------------------------------------------
-    // IMU / odometry helpers
-    // -----------------------------------------------------------------------
-    void imuCallback(const sensor_msgs::ImuConstPtr& msg);
-    bool interpolateIMUOrientation(ros::Time t, Eigen::Quaterniond& q_out);
-
-    void odomCallback(const nav_msgs::OdometryConstPtr& msg);
-    bool interpolateOdometry(ros::Time t, Eigen::Matrix4d& T_out);
-
-    // -----------------------------------------------------------------------
-    // Buffer utilities
-    // -----------------------------------------------------------------------
->>>>>>> 63209a76e848815144b08cf14641af794e33ba63
-    template<typename T>
-    typename T::value_type findClosest(const T& buffer, ros::Time target_time);
-
-    template<typename T>
-<<<<<<< HEAD
-=======
-    typename T::value_type findClosestBefore(const T& buffer, ros::Time reference_time);
-
-    template<typename T>
->>>>>>> 63209a76e848815144b08cf14641af794e33ba63
-    void cleanOldMsgs(std::deque<T>& buffer, ros::Time latest_time);
+    void push(const sensor_msgs::ImuConstPtr& msg);
+    bool interpolate(const ros::Time& t, Eigen::Quaterniond& q_out) const;
+    bool empty() const { return buf_.empty(); }
+    size_t size() const { return buf_.size(); }
+    bool covers(const ros::Time& t) const;
 
 private:
-    ros::NodeHandle nh_;
-    double max_time_offset_;
-    double initial_startup_delay_;
-    ros::Timer color_timer_;
-    bool keep_uncolored_points_;
-    double max_lidar_z_;
-    std::string config_path_, cloud_topic_, output_topic_;
-    std::string image_topic_right_, image_topic_left_;
-<<<<<<< HEAD
-    std::string distortion_model_right_, distortion_model_left_;
-    std::vector<double> intr_right_, intr_left_;
-    std::vector<double> dist_right_, dist_left_;
-    std::vector<double> resolution_right_, resolution_left_;
-    int width_right_, height_right_, width_left_, height_left_;
-
-    Eigen::Matrix4d T_lidar_camera_right_, T_lidar_camera_left_;
-    cv::Mat cv_K_right_, cv_K_left_;
-    cv::Mat distCoeffs_right_, distCoeffs_left_;
-=======
-    std::string imu_topic_;
-    std::string imu_frame_;
-    ros::Subscriber sub_imu_;
-    std::deque<sensor_msgs::ImuConstPtr> imu_buffer_;
-    std::string odom_compensation_frame_; // e.g. "base_link"
-    std::string base_frame_;              // robot body frame in TF tree (e.g. "base_link")
-    ros::Subscriber sub_odom_;
-    std::deque<nav_msgs::OdometryConstPtr> odom_buffer_;
-    bool use_odom_compensation_;  // true=odom, false=imu
-
-    tf2_ros::Buffer tf_buffer_;
-    tf2_ros::TransformListener tf_listener_;
-    std::string lidar_frame_;
-
-    ros::Subscriber sub_info_right_, sub_info_left_;
-    std::string camera_info_topic_right_, camera_info_topic_left_;
-    boost::optional<sensor_msgs::CameraInfo> cam_info_right_, cam_info_left_;
->>>>>>> 63209a76e848815144b08cf14641af794e33ba63
-
-    ros::Subscriber sub_cloud_, sub_img_right_, sub_img_left_;
-    ros::Publisher pub_;
-
-    std::deque<sensor_msgs::PointCloud2ConstPtr> cloud_buffer_;
-    std::deque<sensor_msgs::CompressedImageConstPtr> img_right_buffer_;
-    std::deque<sensor_msgs::CompressedImageConstPtr> img_left_buffer_;
-
-<<<<<<< HEAD
-    // For map node
-=======
-    // -----------------------------------------------------------------------
-    // Calibration extrinsics (loaded directly from calibration.yaml)
-    // -----------------------------------------------------------------------
-    bool            calib_loaded_      = false;
-    std::string     calibration_path_;
-    Eigen::Matrix4d T_cam_lidar_left_  = Eigen::Matrix4d::Identity();
-    Eigen::Matrix4d T_cam_lidar_right_ = Eigen::Matrix4d::Identity();
-    Eigen::Matrix3d R_imu_lidar_       = Eigen::Matrix3d::Identity();
-
-    // -----------------------------------------------------------------------
-    // Map node members
-    // -----------------------------------------------------------------------
->>>>>>> 63209a76e848815144b08cf14641af794e33ba63
-    std::string map_topic_, odom_topic_, save_path_;
-    std::string map_pcd_path_;
-    int min_color_frames_;
-    ros::Subscriber map_sub_, path_sub_;
-    nav_msgs::Path latest_path_;
-    pcl::PointCloud<PointXYZRGBIntensity>::Ptr accumulated_map_;
-    std::map<PointKey, std::vector<cv::Vec3b>> color_history_;
-    pcl::PointCloud<PointXYZRGBIntensity>::Ptr map_points_;
-<<<<<<< HEAD
+    std::deque<sensor_msgs::ImuConstPtr> buf_;
+    double history_sec_ = 10.0;
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Odometry trajectory. Fed either live from a topic or from a CSV exported by
+// (time,x,y,z,qx,qy,qz,qw), one per line.
+// ─────────────────────────────────────────────────────────────────────────────
+class OdomTrajectory {
+public:
+    struct Sample {
+        ros::Time          t;
+        Eigen::Vector3d    p;
+        Eigen::Quaterniond q;
+    };
 
-#endif  // COLORISE_H
-=======
-    ros::Publisher pub_raw_map_;
-    ros::Publisher pub_progress_;
-    ros::Publisher pub_robot_pose_;
-    ros::Publisher pub_frustum_;
-    void publishRawMap();
-    void publishRobotPose(const Eigen::Matrix4d& T_world_base, ros::Time t);
-    void publishFrustum(const Eigen::Matrix4d& T_world_camera,
-                        const sensor_msgs::CameraInfo& info,
-                        ros::Time t, int id, float r, float g, float b);
+    // Returns the number of samples loaded; throws on an unreadable file.
+    size_t loadCsv(const std::string& path);
+    void   push(const nav_msgs::OdometryConstPtr& msg);
+
+    // Interpolates (SLERP + LERP) at t. Fails if t falls outside the samples.
+    bool interpolate(const ros::Time& t, Eigen::Matrix4d& T_out) const;
+    // Nearest sample within max_dt; used by CompMode::NONE and as the IMU anchor.
+    bool nearest(const ros::Time& t, double max_dt, Sample& s_out) const;
+
+    bool   empty() const { return samples_.empty(); }
+    size_t size()  const { return samples_.size(); }
+    ros::Time front() const { return samples_.front().t; }
+    ros::Time back()  const { return samples_.back().t; }
+
+private:
+    std::vector<Sample> samples_;   // kept sorted by time
+    bool   live_          = false;
+    double history_sec_   = 60.0;
 };
 
+Eigen::Matrix4d makeTransform(const Eigen::Quaterniond& q, const Eigen::Vector3d& p);
+
+// Finds the message in `buffer` whose stamp is closest to `target`, within
+// `max_offset` seconds. Returns nullptr if there is none.
+template <typename Deque>
+typename Deque::value_type findClosest(const Deque& buffer,
+                                       const ros::Time& target,
+                                       double max_offset) {
+    typename Deque::value_type best = nullptr;
+    double best_diff = std::numeric_limits<double>::max();
+    for (const auto& msg : buffer) {
+        double diff = std::fabs((msg->header.stamp - target).toSec());
+        if (diff < best_diff && diff <= max_offset) {
+            best      = msg;
+            best_diff = diff;
+        }
+    }
+    return best;
+}
+
+template <typename Deque>
+void cleanOldMsgs(Deque& buffer, const ros::Time& latest, double history_sec = 2.0) {
+    while (!buffer.empty() &&
+           (latest - buffer.front()->header.stamp).toSec() > history_sec)
+        buffer.pop_front();
+}
 
 #endif  // COLORISE_H
->>>>>>> 63209a76e848815144b08cf14641af794e33ba63

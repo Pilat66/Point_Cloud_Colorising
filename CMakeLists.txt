@@ -1,34 +1,31 @@
 cmake_minimum_required(VERSION 3.5)
 project(point_cloud_projection)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-option(ENABLE_CMAKE_DEBUG "Enable detailed debug messages" ON)
-if(ENABLE_CMAKE_DEBUG)
-    set(CMAKE_BUILD_TYPE "Debug")
-else()
+
+# Colourisation projects millions of points per frame — an unoptimised build is
+# far too slow to keep up with a bag at 10 Hz. Default to Release.
+if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE "Release")
 endif()
-set(CMAKE_CXX_FLAGS_RELEASE "-O3 -fsee -fomit-frame-pointer -fno-signed-zeros -fno-math-errno -funroll-loops")
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -fomit-frame-pointer -funroll-loops")
 set(CMAKE_CXX_FLAGS_DEBUG "-g3 -Wall -Wuninitialized -fno-omit-frame-pointer")
 
 find_package(PCL 1.3 REQUIRED)
 find_package(Eigen3 REQUIRED)
-set(OpenCV_DIR "/usr/local/share/opencv4")
 find_package(OpenCV 4 REQUIRED)
-find_package(VTK REQUIRED)
+find_package(yaml-cpp REQUIRED)
 
 find_package(catkin REQUIRED COMPONENTS
     roscpp
-    rosbag
     rospy
-    std_msgs
     sensor_msgs
-    cv_bridge
-    message_filters
-    tf2_ros           
-    tf2_eigen         
-    tf2_geometry_msgs
+    nav_msgs
+    geometry_msgs
+    pcl_ros
+    pcl_conversions
     roslib
     visualization_msgs
 )
@@ -37,17 +34,14 @@ catkin_package(
     CATKIN_DEPENDS
     roscpp
     rospy
-    std_msgs
     sensor_msgs
-    cv_bridge
-    message_filters
-    tf2_ros
-    tf2_eigen
-    tf2_geometry_msgs
+    nav_msgs
+    geometry_msgs
+    pcl_ros
+    pcl_conversions
     roslib
+    visualization_msgs
 )
-
-include(${VTK_USE_FILE})
 
 include_directories(
     include
@@ -60,33 +54,20 @@ include_directories(
 link_directories(${PCL_LIBRARY_DIRS})
 add_definitions(${PCL_DEFINITIONS})
 
-add_executable(ColoriseScan
-    src/ColoriseScan.cc
-    src/utils.cc
+# Shared calibration loading and projection core.
+add_library(colorise_core
+    src/calibration.cpp
+    src/colorise.cpp
 )
-
-add_executable(ColoriseMap
-    src/ColoriseMap.cc
-    src/utils.cc
-)
-
-target_link_libraries(ColoriseScan
-    PUBLIC
+target_link_libraries(colorise_core
     ${PCL_LIBRARIES}
     ${OpenCV_LIBS}
-    ${VTK_LIBRARIES}
-    ${catkin_LIBRARIES}   # tf2_ros, tf2, tf2_eigen already in here
-)
-
-target_link_libraries(ColoriseMap
-    PUBLIC
-    ${PCL_LIBRARIES}
-    ${OpenCV_LIBS}
-    ${VTK_LIBRARIES}
-<<<<<<< HEAD
     ${catkin_LIBRARIES}
+    yaml-cpp
 )
-=======
-    ${catkin_LIBRARIES}   # tf2_ros, tf2, tf2_eigen already in here
-)
->>>>>>> 63209a76e848815144b08cf14641af794e33ba63
+
+add_executable(ColoriseScan src/ColoriseScan.cpp)
+target_link_libraries(ColoriseScan colorise_core)
+
+add_executable(ColoriseMap src/ColoriseMap.cpp)
+target_link_libraries(ColoriseMap colorise_core)

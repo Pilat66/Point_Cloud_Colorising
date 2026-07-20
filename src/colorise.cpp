@@ -13,7 +13,7 @@
 CompMode parseCompMode(const std::string& s) {
     if (s == "none" || s == "off")   return CompMode::NONE;
     if (s == "imu")                  return CompMode::IMU;
-    if (s == "odom" || s == "liosam") return CompMode::ODOM;
+    if (s == "odom") return CompMode::ODOM;
     throw std::runtime_error("Unknown compensation_mode '" + s +
                              "' (expected: none | imu | odom)");
 }
@@ -22,7 +22,7 @@ std::string compModeName(CompMode m) {
     switch (m) {
         case CompMode::NONE: return "none";
         case CompMode::IMU:  return "imu";
-        case CompMode::ODOM: return "odom (LIO-SAM)";
+        case CompMode::ODOM: return "odom";
     }
     return "?";
 }
@@ -72,6 +72,7 @@ void loadCommonParams(const std::string& config_path, CommonParams& p) {
     p.save_pcd_path    = expandRosPath(get<std::string>(cfg, "save_pcd_path", ""));
     p.min_color_frames = get<int>   (cfg, "min_color_frames", 1);
     p.map_max_range    = get<double>(cfg, "map_max_range",    30.0);
+    p.map_publish_every_n = std::max(1, get<int>(cfg, "map_publish_every_n", 5));
 
     // IMU-to-lidar rotation, used by CompMode::IMU.
     std::string imu_key = get<std::string>(cfg, "imu_extrinsic_key", "T_imu_link_os_sensor");
@@ -80,6 +81,7 @@ void loadCommonParams(const std::string& config_path, CommonParams& p) {
     // Global fisheye edge-rejection defaults; cameras may override.
     double default_margin = get<double>(cfg, "edge_margin_px",     0.0);
     double default_angle  = get<double>(cfg, "max_view_angle_deg", 180.0);
+    double default_near   = get<double>(cfg, "min_camera_dist",    0.0);
 
     if (!cfg["cameras"] || !cfg["cameras"].IsSequence() || cfg["cameras"].size() == 0)
         throw std::runtime_error("config.yaml must define a non-empty 'cameras' list");
@@ -129,6 +131,7 @@ void loadCommonParams(const std::string& config_path, CommonParams& p) {
 
         cam.edge_margin_px     = get<double>(c, "edge_margin_px",     default_margin);
         cam.max_view_angle_deg = get<double>(c, "max_view_angle_deg", default_angle);
+        cam.min_camera_dist    = get<double>(c, "min_camera_dist",    default_near);
         cam.min_cos_view_angle = (cam.max_view_angle_deg >= 180.0)
                                    ? -1.0
                                    : std::cos(cam.max_view_angle_deg * M_PI / 180.0);
@@ -160,7 +163,7 @@ void projectAndSample(const std::vector<cv::Point3f>& P3,
     const Eigen::Matrix3d R = T_cam_from_points.block<3, 3>(0, 0);
     const Eigen::Vector3d t = T_cam_from_points.block<3, 1>(0, 3);
 
-    const size_t n = candidates.empty() ? P3.size() : candidates.size();
+    const size_t n = candidates.size();
     if (n == 0) return;
 
     // Pass 1: move points into the camera frame and drop everything that cannot
@@ -175,18 +178,23 @@ void projectAndSample(const std::vector<cv::Point3f>& P3,
     depths.reserve(n);
 
     for (size_t k = 0; k < n; ++k) {
-        const int i = candidates.empty() ? static_cast<int>(k) : candidates[k];
+        const int i = candidates[k];
         const Eigen::Vector3d pw(P3[i].x, P3[i].y, P3[i].z);
         const Eigen::Vector3d pc = R * pw + t;
 
         if (pc.z() <= 0.0) continue;  // behind the camera
 
-        if (cam.min_cos_view_angle > -1.0) {
-            const double norm = pc.norm();
-            if (norm < 1e-6) continue;
-            // cos(angle from optical axis) = z / |p|
-            if (pc.z() / norm < cam.min_cos_view_angle) continue;
-        }
+        const double dist = pc.norm();
+        if (dist < 1e-6) continue;
+
+        // Near-range gate. Distance from the camera centre, not depth along the
+        // optical axis: on a fisheye a point 1 m off to the side is just as
+        // close, and just as badly modelled, as one 1 m straight ahead.
+        if (dist < cam.min_camera_dist) continue;
+
+        // cos(angle from optical axis) = z / |p|
+        if (cam.min_cos_view_angle > -1.0 &&
+            pc.z() / dist < cam.min_cos_view_angle) continue;
 
         cam_pts.emplace_back(static_cast<float>(pc.x()),
                              static_cast<float>(pc.y()),

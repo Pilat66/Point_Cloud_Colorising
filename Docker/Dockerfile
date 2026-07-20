@@ -51,7 +51,9 @@ RUN apt-get install -y \
     ros-${ROS_DISTRO}-hector-trajectory-server \
     ros-${ROS_DISTRO}-rviz \
     ros-${ROS_DISTRO}-image-geometry ros-${ROS_DISTRO}-pcl-ros \
-    ros-${ROS_DISTRO}-cv-bridge pkg-config autoconf
+    ros-${ROS_DISTRO}-pcl-conversions ros-${ROS_DISTRO}-tf2-ros \
+    libyaml-cpp-dev \
+    pkg-config autoconf
 
 RUN echo "source /opt/ros/${ROS_DISTRO}/setup.bash" >> /root/.bashrc
 RUN echo "source /root/catkin_ws/devel/setup.bash" >> /root/.bashrc

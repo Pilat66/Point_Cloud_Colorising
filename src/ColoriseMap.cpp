@@ -1,15 +1,14 @@
-// ColoriseMap — colourise a pre-built LIO-SAM map with the camera images from
+// ColoriseMap — colourise a pre-built point cloud map with camera images from
 // the same run.
 //
-// The map points are static and live in the odometry/world frame, so the only
-// thing that varies per frame is where the camera was. That pose comes from the
-// LIO-SAM odometry, read from a CSV exported by scripts/export_odom_csv.py
-// (preferred, because it lets the whole trajectory be available up front) or
-// live from the odometry topic.
+// The map points are static and live in the map/world frame, so the only thing
+// that varies per frame is where the camera was. That pose comes from a CSV of
+// timestamped lidar poses (preferred, because the whole trajectory is then
+// available up front) or live from an odometry topic.
 //
-// The image timestamps do not line up with the odometry samples, so the pose is
+// The image timestamps do not line up with the pose samples, so the pose is
 // interpolated to each image's own capture time — either straight from the
-// odometry (CompMode::ODOM) or by anchoring on the nearest odometry sample and
+// trajectory (CompMode::ODOM) or by anchoring on the nearest sample and
 // rotating with the IMU (CompMode::IMU).
 
 #include "colorise.h"
@@ -41,11 +40,12 @@ public:
                 p_.cameras[i].image_topic, 20,
                 boost::bind(&MapColouriser::imageCallback, this, _1, i)));
             ROS_INFO("[ColoriseMap] camera '%s': %s  (%dx%d, %s, margin=%.0f px, "
-                     "max view angle=%.0f deg)",
+                     "max view angle=%.0f deg, min dist=%.1f m)",
                      p_.cameras[i].name.c_str(), p_.cameras[i].image_topic.c_str(),
                      p_.cameras[i].width, p_.cameras[i].height,
                      p_.cameras[i].distortion_model.c_str(),
-                     p_.cameras[i].edge_margin_px, p_.cameras[i].max_view_angle_deg);
+                     p_.cameras[i].edge_margin_px, p_.cameras[i].max_view_angle_deg,
+                     p_.cameras[i].min_camera_dist);
         }
 
         if (p_.compensation_mode == CompMode::IMU)
@@ -99,7 +99,7 @@ private:
         if (p_.map_pcd_path.empty())
             throw std::runtime_error("map_pcd_path is not set in config.yaml");
 
-        // LIO-SAM writes GlobalMap.pcd as plain XYZI.
+        // Map is loaded as plain XYZI (the intensity is preserved for the grey backdrop).
         pcl::PointCloud<pcl::PointXYZI>::Ptr raw(new pcl::PointCloud<pcl::PointXYZI>);
         if (pcl::io::loadPCDFile<pcl::PointXYZI>(p_.map_pcd_path, *raw) == -1)
             throw std::runtime_error("Failed to load map PCD: " + p_.map_pcd_path);
@@ -136,7 +136,7 @@ private:
     void loadOdometry() {
         if (p_.odom_csv_path.empty()) {
             ROS_WARN("[ColoriseMap] odom_csv_path not set — falling back to the live "
-                     "topic %s. Exporting a CSV with scripts/export_odom_csv.py is "
+                     "topic %s. Providing odom_csv_path is "
                      "preferred: the full trajectory is then known up front.",
                      p_.odom_topic.c_str());
             return;
@@ -150,7 +150,22 @@ private:
 
     void imageCallback(const sensor_msgs::CompressedImageConstPtr& msg, size_t idx) {
         img_buffers_[idx].push_back(msg);
-        cleanOldMsgs(img_buffers_[idx], msg->header.stamp, 5.0);
+        cleanOldMsgs(img_buffers_[idx], msg->header.stamp, kImageHistorySec);
+
+        // Projecting the map is slower than the cameras deliver, so the driving
+        // buffer builds a backlog. Left alone it drifts until the partner
+        // cameras have already aged those timestamps out and every frame fails
+        // to pair. Colourisation does not need every frame — skipping ahead
+        // keeps the pairing valid and the view live.
+        if (idx == 0 && img_buffers_[0].size() > kMaxBacklog) {
+            const size_t drop = img_buffers_[0].size() - kMaxBacklog;
+            img_buffers_[0].erase(img_buffers_[0].begin(),
+                                  img_buffers_[0].begin() + drop);
+            dropped_ += drop;
+            ROS_WARN_THROTTLE(5.0, "[ColoriseMap] behind real time — skipped %zu frames "
+                              "so far (harmless; lower map_max_range or the bag rate "
+                              "to keep up)", dropped_);
+        }
     }
 
     void imuCallback(const sensor_msgs::ImuConstPtr& msg) { imu_.push(msg); }
@@ -195,7 +210,7 @@ private:
 
     // ── Pose at an image timestamp ───────────────────────────────────────────
     //
-    // Returns T_world_lidar at t. LIO-SAM's mapping odometry is the pose of the
+    // Returns T_world_lidar at t. The trajectory poses are the pose of the
     // lidar frame (params.yaml sets lidarFrame: os_sensor), so composing with
     // the calibration extrinsic gives the camera pose directly — no TF needed.
 
@@ -313,7 +328,7 @@ private:
                 frames_processed_);
         }
 
-        if (frames_processed_ % 10 == 0) publishColoured();
+        if (frames_processed_ % p_.map_publish_every_n == 0) publishColoured();
 
         if (frames_processed_ % 20 == 0) {
             size_t done = 0;
@@ -493,7 +508,13 @@ private:
     std::vector<int>             colour_cnt_;
 
     size_t frames_processed_ = 0;
+    size_t dropped_          = 0;
     bool   saved_            = false;
+
+    // Partner-camera history must comfortably exceed the driving buffer's
+    // backlog, or pairing fails on exactly the frames we kept.
+    static constexpr double kImageHistorySec = 10.0;
+    static constexpr size_t kMaxBacklog      = 4;
 };
 
 static void signalHandler(int) {
@@ -516,6 +537,13 @@ int main(int argc, char** argv) {
     CommonParams params;
     try {
         loadCommonParams(config_path, params);
+
+        // Optional ROS-param override, so the mode can be switched from the
+        // launch file without editing config.yaml.
+        std::string mode_override;
+        nh.param("compensation_mode", mode_override, std::string(""));
+        if (!mode_override.empty())
+            params.compensation_mode = parseCompMode(mode_override);
     } catch (const std::exception& e) {
         ROS_FATAL("[ColoriseMap] configuration error: %s", e.what());
         return 1;

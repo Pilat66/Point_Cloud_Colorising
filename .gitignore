@@ -1,1 +1,14 @@
+# Generated data: maps, pose CSVs, colourised output, debug dumps, renders.
+# PCD/ is where the nodes write by default; the patterns catch anything placed
+# elsewhere, e.g. a SurfMap.pcd dropped in the package root.
 PCD/
+*.pcd
+*.bag
+*.csv
+*.png
+*.jpg
+
+# Build output
+build/
+devel/
+install/

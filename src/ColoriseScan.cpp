@@ -1,629 +1,383 @@
+// ColoriseScan — colourise each instantaneous lidar sweep with the camera
+// images captured closest to it.
+//
+// The cameras are not hardware-synchronised with the lidar (in the reference
+// bag the images are consistently ~22 ms older than the sweep they match), so
+// the static extrinsic alone smears colour across edges whenever the platform
+// moves. The pose delta over that offset is estimated either from the IMU
+// (rotation only) or from an odometry trajectory (full 6-DoF) — see CompMode.
+
 #include "colorise.h"
-#include "utils.h"
 
-<<<<<<< HEAD
-PointCloudColorizer::PointCloudColorizer(ros::NodeHandle& nh) : nh_(nh) {
-    nh_.param("config_path", config_path_, std::string("../configs/config.yaml"));
+#include <boost/bind.hpp>
+#include <cstring>
 
-=======
-PointCloudColorizer::PointCloudColorizer(ros::NodeHandle& nh)
-    : nh_(nh), tf_listener_(tf_buffer_)
-{
-    nh_.param("config_path", config_path_, std::string("../configs/config.yaml"));
->>>>>>> 63209a76e848815144b08cf14641af794e33ba63
-    cv::FileStorage fs(config_path_, cv::FileStorage::READ);
-    if (!fs.isOpened()) {
-        ROS_ERROR("Unable to open config file: %s", config_path_.c_str());
-        ros::shutdown(); return;
+class ScanColouriser {
+public:
+    explicit ScanColouriser(ros::NodeHandle& nh, const CommonParams& params)
+        : nh_(nh), p_(params) {
+        img_buffers_.resize(p_.cameras.size());
+
+        sub_cloud_ = nh_.subscribe(p_.pointcloud_topic, 10,
+                                   &ScanColouriser::cloudCallback, this);
+
+        for (size_t i = 0; i < p_.cameras.size(); ++i) {
+            sub_imgs_.push_back(nh_.subscribe<sensor_msgs::CompressedImage>(
+                p_.cameras[i].image_topic, 10,
+                boost::bind(&ScanColouriser::imageCallback, this, _1, i)));
+            ROS_INFO("[ColoriseScan] camera '%s': %s  (%dx%d, %s, margin=%.0f px, "
+                     "max view angle=%.0f deg, min dist=%.1f m)",
+                     p_.cameras[i].name.c_str(), p_.cameras[i].image_topic.c_str(),
+                     p_.cameras[i].width, p_.cameras[i].height,
+                     p_.cameras[i].distortion_model.c_str(),
+                     p_.cameras[i].edge_margin_px, p_.cameras[i].max_view_angle_deg,
+                     p_.cameras[i].min_camera_dist);
+        }
+
+        if (p_.compensation_mode == CompMode::IMU)
+            sub_imu_ = nh_.subscribe(p_.imu_topic, 500,
+                                     &ScanColouriser::imuCallback, this);
+        if (p_.compensation_mode == CompMode::ODOM)
+            sub_odom_ = nh_.subscribe(p_.odom_topic, 200,
+                                      &ScanColouriser::odomCallback, this);
+
+        pub_ = nh_.advertise<sensor_msgs::PointCloud2>(p_.output_topic, 1);
+
+        ROS_INFO("[ColoriseScan] compensation mode: %s",
+                 compModeName(p_.compensation_mode).c_str());
+        ROS_INFO("[ColoriseScan] publishing to %s", p_.output_topic.c_str());
     }
 
-<<<<<<< HEAD
-    fs["max_time_offset"] >> max_time_offset_;
-    fs["initial_startup_delay"] >> initial_startup_delay_;
-    fs["image_topic_right"] >> image_topic_right_;
-    fs["image_topic_left"] >> image_topic_left_;
-    fs["pointcloud_topic"] >> cloud_topic_;
-    fs["output_topic"] >> output_topic_;
-    fs["keep_uncolored_points"] >> keep_uncolored_points_; 
-    fs["max_lidar_z"] >> max_lidar_z_;
+private:
+    // ── Callbacks ────────────────────────────────────────────────────────────
 
-    fs["intrinsics_right"] >> intr_right_;
-    cv_K_right_ = (cv::Mat_<double>(3,3) << intr_right_[0],0,intr_right_[2],0,intr_right_[1],intr_right_[3],0,0,1);
-    fs["distortion_coeffs_right"] >> dist_right_; distCoeffs_right_ = cv::Mat(dist_right_);
-    fs["distortion_model_right"] >> distortion_model_right_;
-    fs["resolution_right"] >> resolution_right_;
-    width_right_ = resolution_right_[0]; height_right_ = resolution_right_[1];
-    parseMat(fs, "T_lidar_camera_right", T_lidar_camera_right_);
-
-    fs["intrinsics_left"] >> intr_left_;
-    cv_K_left_ = (cv::Mat_<double>(3,3) << intr_left_[0],0,intr_left_[2],0,intr_left_[1],intr_left_[3],0,0,1);
-    fs["distortion_coeffs_left"] >> dist_left_; distCoeffs_left_ = cv::Mat(dist_left_);
-    fs["distortion_model_left"] >> distortion_model_left_;
-    fs["resolution_left"] >> resolution_left_;
-    width_left_ = resolution_left_[0]; height_left_ = resolution_left_[1];
-    parseMat(fs, "T_lidar_camera_left", T_lidar_camera_left_);
-    fs.release();
-
-    sub_cloud_ = nh_.subscribe(cloud_topic_, 10, &PointCloudColorizer::cloudCallback, this);
-    sub_img_right_ = nh_.subscribe(image_topic_right_, 10, &PointCloudColorizer::imgRightCallback, this);
-    sub_img_left_ = nh_.subscribe(image_topic_left_, 10, &PointCloudColorizer::imgLeftCallback, this);
-
-    pub_ = nh_.advertise<sensor_msgs::PointCloud2>(output_topic_, 1);
-    ROS_INFO("Initialized and publishing to %s", output_topic_.c_str());
-}
-
-=======
-    fs["max_time_offset"]         >> max_time_offset_;
-    fs["initial_startup_delay"]   >> initial_startup_delay_;
-    fs["image_topic_right"]       >> image_topic_right_;
-    fs["image_topic_left"]        >> image_topic_left_;
-    fs["pointcloud_topic"]        >> cloud_topic_;
-    fs["output_topic"]            >> output_topic_;
-    fs["keep_uncolored_points"]   >> keep_uncolored_points_;
-    fs["max_lidar_z"]             >> max_lidar_z_;
-    fs["lidar_frame"]             >> lidar_frame_;
-    fs["camera_info_topic_right"] >> camera_info_topic_right_;
-    fs["camera_info_topic_left"]  >> camera_info_topic_left_;
-    fs["imu_topic"]               >> imu_topic_;
-    fs["imu_frame"]               >> imu_frame_;
-    std::string use_calib_str = "true";
-    fs["use_calibration_file"] >> use_calib_str;
-    bool use_calibration_file = (use_calib_str != "false" && use_calib_str != "0");
-    fs.release();
-
-    // ── Extrinsics: hardcoded from calibration.yaml OR live TF lookup ─────────
-    if (use_calibration_file) {
-        // Values from configs/calibration.yaml
-        //
-        // T_forwardLeft_cam_os_sensor  (cam_left from lidar, direct)
-        T_cam_lidar_left_ <<
-             0.0365235158, -0.9992455766, -0.0132026663,  0.0715811084,
-             0.0007068971,  0.0132373111, -0.9999121331, -0.0815248470,
-             0.9993325438,  0.0365109736,  0.0011898369, -0.1028095976,
-             0.0,           0.0,           0.0,           1.0;
-
-        // T_os_sensor_forwardRight_cam  (lidar from cam_right) — inverted to get cam_right from lidar
-        Eigen::Matrix4d T_lidar_cam_right;
-        T_lidar_cam_right <<
-             0.0124443801, -0.0001078424,  0.9999225599,  0.1023230120,
-            -0.9998382680,  0.0129833120,  0.0124447313, -0.0631096435,
-            -0.0129836487, -0.9999157074,  0.0000537442, -0.0825364298,
-             0.0,           0.0,           0.0,           1.0;
-        T_cam_lidar_right_ = T_lidar_cam_right.inverse();
-
-        // T_imu_link_os_sensor  (rotation block only, imu from lidar)
-        R_imu_lidar_ <<
-             0.9998459674, -0.0157202487,  0.0078048180,
-             0.0155436449,  0.9996328268,  0.0221947415,
-            -0.0081508592, -0.0220700073,  0.9997232008;
-
-        calib_loaded_ = true;
-        ROS_INFO("[ColoriseScan] Extrinsics loaded from calibration.yaml constants");
-    } else {
-        ROS_INFO("[ColoriseScan] Extrinsics will be looked up from TF tree at runtime");
+    void cloudCallback(const sensor_msgs::PointCloud2ConstPtr& msg) {
+        cloud_buffer_.push_back(msg);
+        cleanOldMsgs(cloud_buffer_, msg->header.stamp);
+        trySyncAndProcess();
     }
 
-    // ── Subscribers ───────────────────────────────────────────────────────────
-    sub_cloud_      = nh_.subscribe(cloud_topic_,            10,  &PointCloudColorizer::cloudCallback,        this);
-    sub_img_right_  = nh_.subscribe(image_topic_right_,      10,  &PointCloudColorizer::imgRightCallback,     this);
-    sub_img_left_   = nh_.subscribe(image_topic_left_,       10,  &PointCloudColorizer::imgLeftCallback,      this);
-    sub_info_right_ = nh_.subscribe(camera_info_topic_right_, 1,  &PointCloudColorizer::camInfoRightCallback, this);
-    sub_info_left_  = nh_.subscribe(camera_info_topic_left_,  1,  &PointCloudColorizer::camInfoLeftCallback,  this);
-    sub_imu_        = nh_.subscribe(imu_topic_,             200,  &PointCloudColorizer::imuCallback,          this);
-
-    pub_ = nh_.advertise<sensor_msgs::PointCloud2>(output_topic_, 1);
-    ROS_INFO("[ColoriseScan] Initialized. Publishing to %s", output_topic_.c_str());
-}
-
-// ── Odometry stubs (used by ColoriseMap, not by this node) ────────────────────
-void PointCloudColorizer::odomCallback(const nav_msgs::OdometryConstPtr&) {}
-bool PointCloudColorizer::interpolateOdometry(ros::Time, Eigen::Matrix4d&) { return false; }
-
-// ── Camera info callbacks ─────────────────────────────────────────────────────
-
-void PointCloudColorizer::camInfoRightCallback(const sensor_msgs::CameraInfoConstPtr& msg) {
-    if (!cam_info_right_) {
-        cam_info_right_ = *msg;
-        ROS_INFO("[ColoriseScan] Right camera info (frame: %s, %dx%d)",
-                 msg->header.frame_id.c_str(), msg->width, msg->height);
+    void imageCallback(const sensor_msgs::CompressedImageConstPtr& msg, size_t idx) {
+        img_buffers_[idx].push_back(msg);
+        cleanOldMsgs(img_buffers_[idx], msg->header.stamp);
     }
-}
 
-void PointCloudColorizer::camInfoLeftCallback(const sensor_msgs::CameraInfoConstPtr& msg) {
-    if (!cam_info_left_) {
-        cam_info_left_ = *msg;
-        ROS_INFO("[ColoriseScan] Left camera info (frame: %s, %dx%d)",
-                 msg->header.frame_id.c_str(), msg->width, msg->height);
+    void imuCallback(const sensor_msgs::ImuConstPtr& msg) { imu_.push(msg); }
+
+    void odomCallback(const nav_msgs::OdometryConstPtr& msg) { odom_.push(msg); }
+
+    // ── Sync ─────────────────────────────────────────────────────────────────
+
+    void trySyncAndProcess() {
+        for (const auto& b : img_buffers_)
+            if (b.empty()) return;
+        if (cloud_buffer_.empty()) return;
+
+        for (auto it = cloud_buffer_.begin(); it != cloud_buffer_.end(); ++it) {
+            const ros::Time t_lidar = (*it)->header.stamp;
+
+            // The pose source has to already cover this sweep, otherwise
+            // interpolation fails and the mode silently degrades to the static
+            // extrinsic. Odometry in particular can lag the lidar (a SLAM node has to
+            // process the sweep first), so hold the sweep until it catches up.
+            if (!poseSourceReady(t_lidar)) return;
+
+            std::vector<sensor_msgs::CompressedImageConstPtr> imgs(p_.cameras.size());
+            bool complete = true;
+            for (size_t i = 0; i < p_.cameras.size(); ++i) {
+                imgs[i] = findClosest(img_buffers_[i], t_lidar, p_.max_time_offset);
+                if (!imgs[i]) { complete = false; break; }
+            }
+            if (!complete) continue;
+
+            process(*it, imgs, t_lidar);
+            cloud_buffer_.erase(cloud_buffer_.begin(), it + 1);
+            return;
+        }
+
+        ROS_WARN_THROTTLE(5.0,
+            "[ColoriseScan] no image match within max_time_offset=%.3f s for any "
+            "buffered sweep — raise max_time_offset if this persists",
+            p_.max_time_offset);
     }
-}
 
-// ── IMU buffer ────────────────────────────────────────────────────────────────
-
-void PointCloudColorizer::imuCallback(const sensor_msgs::ImuConstPtr& msg) {
-    imu_buffer_.push_back(msg);
-    cleanOldMsgs(imu_buffer_, msg->header.stamp);
-}
-
-bool PointCloudColorizer::interpolateIMUOrientation(ros::Time t, Eigen::Quaterniond& q_out) {
-    if (imu_buffer_.size() < 2) return false;
-
-    if (t >= imu_buffer_.back()->header.stamp) {
-        const auto& q = imu_buffer_.back()->orientation;
-        q_out = Eigen::Quaterniond(q.w, q.x, q.y, q.z).normalized();
+    // True once the configured pose source spans t (plus the pairing window, so
+    // the camera timestamp on either side of the sweep is covered too).
+    bool poseSourceReady(const ros::Time& t) const {
+        const ros::Duration pad(p_.max_time_offset);
+        switch (p_.compensation_mode) {
+            case CompMode::NONE:
+                return true;
+            case CompMode::IMU:
+                if (imu_.covers(t + pad)) return true;
+                ROS_WARN_THROTTLE(5.0, "[ColoriseScan] waiting for IMU to cover t=%.3f "
+                                  "(buffer=%zu)", t.toSec(), imu_.size());
+                return false;
+            case CompMode::ODOM:
+                if (odom_.size() >= 2 && odom_.back() >= t + pad &&
+                    odom_.front() <= t - pad) return true;
+                ROS_WARN_THROTTLE(5.0, "[ColoriseScan] waiting for odometry to cover "
+                                  "t=%.3f (samples=%zu, span %.3f..%.3f, need %.3f..%.3f, "
+                                  "topic %s)",
+                                  t.toSec(), odom_.size(),
+                                  odom_.size() ? odom_.front().toSec() : 0.0,
+                                  odom_.size() ? odom_.back().toSec()  : 0.0,
+                                  (t - pad).toSec(), (t + pad).toSec(),
+                                  p_.odom_topic.c_str());
+                return false;
+        }
         return true;
     }
 
-    for (size_t i = 0; i + 1 < imu_buffer_.size(); ++i) {
-        if (imu_buffer_[i]->header.stamp <= t && imu_buffer_[i+1]->header.stamp >= t) {
-            double dt_total = (imu_buffer_[i+1]->header.stamp - imu_buffer_[i]->header.stamp).toSec();
-            double dt_query = (t - imu_buffer_[i]->header.stamp).toSec();
-            double alpha    = (dt_total > 1e-9) ? dt_query / dt_total : 0.0;
-            const auto& qb  = imu_buffer_[i]->orientation;
-            const auto& qa  = imu_buffer_[i+1]->orientation;
-            q_out = Eigen::Quaterniond(qb.w, qb.x, qb.y, qb.z).normalized()
-                        .slerp(alpha,
-                               Eigen::Quaterniond(qa.w, qa.x, qa.y, qa.z).normalized());
-            return true;
+    // ── Motion compensation ──────────────────────────────────────────────────
+    //
+    // Returns the transform taking points from the lidar frame at t_lidar into
+    // the camera frame at t_cam:
+    //
+    //   T_cam_from_lidar = T_cam_lidar(static) * T_lidar(t_cam)_from_lidar(t_lidar)
+    //
+    // The delta term is identity under CompMode::NONE, rotation-only under IMU,
+    // and full 6-DoF under ODOM. On missing data it degrades to the static
+    // extrinsic and warns rather than dropping the sweep.
+
+    bool computeCamFromLidar(const CameraCalib& cam,
+                             const ros::Time& t_lidar,
+                             const ros::Time& t_cam,
+                             Eigen::Matrix4d& T_out) {
+        Eigen::Matrix4d delta = Eigen::Matrix4d::Identity();
+        const double dt = (t_cam - t_lidar).toSec();
+
+        if (p_.compensation_mode != CompMode::NONE && std::fabs(dt) > 1e-4) {
+            if (p_.compensation_mode == CompMode::IMU) {
+                Eigen::Quaterniond q_lidar, q_cam;
+                if (imu_.interpolate(t_lidar, q_lidar) && imu_.interpolate(t_cam, q_cam)) {
+                    // R_world_lidar(t) = R_world_imu(t) * R_imu_lidar
+                    const Eigen::Matrix3d R_delta =
+                        p_.R_imu_lidar.transpose() *
+                        (q_cam.toRotationMatrix().transpose() * q_lidar.toRotationMatrix()) *
+                        p_.R_imu_lidar;
+                    delta.block<3, 3>(0, 0) = R_delta;
+                } else {
+                    ROS_WARN_THROTTLE(5.0,
+                        "[ColoriseScan] IMU does not cover dt=%.4f s (buffer=%zu) — "
+                        "falling back to the static extrinsic", dt, imu_.size());
+                }
+            } else {  // ODOM
+                Eigen::Matrix4d T_at_lidar, T_at_cam;
+                if (odom_.interpolate(t_lidar, T_at_lidar) &&
+                    odom_.interpolate(t_cam,   T_at_cam)) {
+                    delta = T_at_cam.inverse() * T_at_lidar;
+                } else {
+                    ROS_WARN_THROTTLE(5.0,
+                        "[ColoriseScan] odometry does not cover dt=%.4f s (samples=%zu) — "
+                        "falling back to the static extrinsic", dt, odom_.size());
+                }
+            }
         }
-    }
-    return false;
-}
 
-// ── IMU rotation-only motion compensation ────────────────────────────────────
-//
-// For the short camera-lidar timestamp offset (~10-100 ms), only the rotational
-// component matters — translational displacement is typically < 5 mm, which is
-// sub-pixel at any useful projection distance.
-//
-// Chain:
-//   R_delta_world = R_world(t_cam)^T  *  R_world(t_lidar)
-//   R_lidar_comp  = R_lidar_imu       *  R_delta_world  *  R_imu_lidar
-//   T_out         = T_cam_lidar_static * T_lidar_comp   (translation = 0)
-//
-// Falls back to the static extrinsic if IMU data is unavailable.
-// ─────────────────────────────────────────────────────────────────────────────
-bool PointCloudColorizer::computeCamFromLidarIMU(ros::Time t_lidar, ros::Time t_cam,
-                                                 const std::string& cam_frame,
-                                                 Eigen::Matrix4d& T_out)
-{
-    // Static cam-from-lidar extrinsic
-    Eigen::Matrix4d T_cam_lidar_static;
-    if (calib_loaded_) {
-        bool is_right = (cam_frame.find("ight") != std::string::npos);
-        T_cam_lidar_static = is_right ? T_cam_lidar_right_ : T_cam_lidar_left_;
-        ROS_INFO_ONCE("[ColoriseScan] [%s] extrinsic: hardcoded calibration.yaml",
-                      cam_frame.c_str());
-    } else {
-        try {
-            T_cam_lidar_static = tf2::transformToEigen(
-                tf_buffer_.lookupTransform(cam_frame, lidar_frame_,
-                                           ros::Time(0), ros::Duration(0.1))).matrix();
-            ROS_INFO_ONCE("[ColoriseScan] [%s] extrinsic: TF '%s' -> '%s'",
-                          cam_frame.c_str(), cam_frame.c_str(), lidar_frame_.c_str());
-        } catch (const tf2::TransformException& ex) {
-            ROS_WARN_THROTTLE(2.0, "[ColoriseScan] TF cam<-lidar failed for %s: %s",
-                              cam_frame.c_str(), ex.what());
-            return false;
-        }
-    }
+        T_out = cam.T_cam_lidar * delta;
 
-    const double dt = (t_lidar - t_cam).toSec();
+        // Report how much work the compensation is actually doing. If this is
+        // ~0 the mode is having no effect and something upstream is wrong.
+        const double rot_deg = Eigen::AngleAxisd(
+            Eigen::Matrix3d(delta.block<3, 3>(0, 0))).angle() * 180.0 / M_PI;
+        const double trans_mm = delta.block<3, 1>(0, 3).norm() * 1e3;
+        ROS_INFO_THROTTLE(5.0,
+            "[ColoriseScan] compensation [%s] dt=%+.1f ms -> rot=%.3f deg, trans=%.1f mm",
+            cam.name.c_str(), dt * 1e3, rot_deg, trans_mm);
 
-    // No compensation needed for negligible offset
-    if (std::fabs(dt) < 1e-4) {
-        T_out = T_cam_lidar_static;
         return true;
     }
 
-    // SLERP IMU orientations at both timestamps
-    Eigen::Quaterniond q_at_lidar, q_at_cam;
-    if (!interpolateIMUOrientation(t_lidar, q_at_lidar) ||
-        !interpolateIMUOrientation(t_cam,   q_at_cam)) {
-        ROS_WARN_THROTTLE(2.0, "[ColoriseScan] IMU orientation unavailable for dt=%.4f s "
-                          "— using static extrinsic", dt);
-        T_out = T_cam_lidar_static;
-        return true;
-    }
+    // ── Processing ───────────────────────────────────────────────────────────
 
-    // R_imu_from_lidar for frame conversion
-    Eigen::Matrix3d R_imu_lidar;
-    if (calib_loaded_) {
-        R_imu_lidar = R_imu_lidar_;
-    } else {
-        try {
-            R_imu_lidar = tf2::transformToEigen(
-                tf_buffer_.lookupTransform(imu_frame_, lidar_frame_,
-                                           ros::Time(0), ros::Duration(0.1))).matrix()
-                          .block<3,3>(0,0);
-            ROS_INFO_ONCE("[ColoriseScan] R_imu_lidar: TF '%s' -> '%s'",
-                          imu_frame_.c_str(), lidar_frame_.c_str());
-        } catch (const tf2::TransformException& ex) {
-            ROS_WARN_THROTTLE(2.0, "[ColoriseScan] TF imu<-lidar failed: %s — using identity",
-                              ex.what());
-            R_imu_lidar = Eigen::Matrix3d::Identity();
-        }
-    }
+    void process(const sensor_msgs::PointCloud2ConstPtr& cloud_msg,
+                 const std::vector<sensor_msgs::CompressedImageConstPtr>& imgs,
+                 const ros::Time& t_lidar) {
+        pcl::PointCloud<PointXYZRGBIntensity>::Ptr in(
+            new pcl::PointCloud<PointXYZRGBIntensity>);
+        if (!unpackCloud(cloud_msg, in)) return;
 
-    // Rotation delta in world frame, then expressed in lidar frame
-    Eigen::Matrix3d R_delta_world = q_at_cam.normalized().toRotationMatrix().transpose()
-                                  * q_at_lidar.normalized().toRotationMatrix();
-    Eigen::Matrix3d R_lidar_comp  = R_imu_lidar.transpose() * R_delta_world * R_imu_lidar;
+        std::vector<cv::Point3f> P3;
+        P3.reserve(in->points.size());
+        for (const auto& pt : in->points)
+            P3.emplace_back(pt.x, pt.y, pt.z);
 
-    Eigen::Matrix4d T_lidar_comp = Eigen::Matrix4d::Identity();
-    T_lidar_comp.block<3,3>(0,0) = R_lidar_comp;
+        // Height gate in the lidar frame, applied once for all cameras.
+        std::vector<int> candidates;
+        candidates.reserve(P3.size());
+        for (size_t i = 0; i < P3.size(); ++i)
+            if (P3[i].z <= p_.max_lidar_z) candidates.push_back(static_cast<int>(i));
 
-    T_out = T_cam_lidar_static * T_lidar_comp;
-
-    ROS_DEBUG_THROTTLE(1.0, "[ColoriseScan] IMU comp [%s]: rot=%.4f deg, dt=%.4f s",
-        cam_frame.c_str(),
-        Eigen::AngleAxisd(R_lidar_comp).angle() * 180.0 / M_PI, dt);
-
-    return true;
-}
-
-// ── Cloud / image callbacks and sync ─────────────────────────────────────────
-
->>>>>>> 63209a76e848815144b08cf14641af794e33ba63
-void PointCloudColorizer::cloudCallback(const sensor_msgs::PointCloud2ConstPtr& msg) {
-    cloud_buffer_.push_back(msg);
-    cleanOldMsgs(cloud_buffer_, msg->header.stamp);
-    trySyncAndProcess();
-}
-
-void PointCloudColorizer::imgRightCallback(const sensor_msgs::CompressedImageConstPtr& msg) {
-    img_right_buffer_.push_back(msg);
-    cleanOldMsgs(img_right_buffer_, msg->header.stamp);
-}
-
-void PointCloudColorizer::imgLeftCallback(const sensor_msgs::CompressedImageConstPtr& msg) {
-    img_left_buffer_.push_back(msg);
-    cleanOldMsgs(img_left_buffer_, msg->header.stamp);
-}
-
-void PointCloudColorizer::trySyncAndProcess() {
-<<<<<<< HEAD
-    if (cloud_buffer_.empty() || img_right_buffer_.empty() || img_left_buffer_.empty()) return;
-    for (auto it_cloud = cloud_buffer_.begin(); it_cloud != cloud_buffer_.end(); ++it_cloud) {
-        ros::Time t = (*it_cloud)->header.stamp;
-        auto img_right = findClosest(img_right_buffer_, t);
-        auto img_left = findClosest(img_left_buffer_, t);
-        if (!img_right || !img_left) continue;
-        callback(*it_cloud, img_right, img_left);
-=======
-    if (!cam_info_right_ || !cam_info_left_) {
-        ROS_WARN_THROTTLE(5.0, "[ColoriseScan] Waiting for camera_info on both cameras...");
-        return;
-    }
-    if (cloud_buffer_.empty() || img_right_buffer_.empty() || img_left_buffer_.empty()) return;
-
-    for (auto it_cloud = cloud_buffer_.begin(); it_cloud != cloud_buffer_.end(); ++it_cloud) {
-        ros::Time t_lidar = (*it_cloud)->header.stamp;
-
-        auto img_right = findClosestBefore(img_right_buffer_, t_lidar);
-        auto img_left  = findClosestBefore(img_left_buffer_,  t_lidar);
-        if (!img_right || !img_left) continue;
-
-        callback(*it_cloud, img_right, img_left, t_lidar,
-                 img_right->header.stamp > img_left->header.stamp
-                     ? img_right->header.stamp : img_left->header.stamp);
->>>>>>> 63209a76e848815144b08cf14641af794e33ba63
-        cloud_buffer_.erase(cloud_buffer_.begin(), it_cloud + 1);
-        return;
-    }
-}
-
-template<typename T>
-void PointCloudColorizer::cleanOldMsgs(std::deque<T>& buffer, ros::Time latest_time) {
-<<<<<<< HEAD
-    while (!buffer.empty() && (latest_time - buffer.front()->header.stamp).toSec() > 2.0)
-=======
-    while (!buffer.empty() &&
-           (latest_time - buffer.front()->header.stamp).toSec() > 2.0)
->>>>>>> 63209a76e848815144b08cf14641af794e33ba63
-        buffer.pop_front();
-}
-
-template<typename T>
-typename T::value_type PointCloudColorizer::findClosest(const T& buffer, ros::Time target_time) {
-    typename T::value_type best_match = nullptr;
-    double best_diff = std::numeric_limits<double>::max();
-    for (const auto& msg : buffer) {
-        double diff = fabs((msg->header.stamp - target_time).toSec());
-        if (diff < best_diff && diff <= max_time_offset_)
-            best_match = msg, best_diff = diff;
-    }
-    return best_match;
-}
-
-<<<<<<< HEAD
-void PointCloudColorizer::callback(const sensor_msgs::PointCloud2ConstPtr& cloud_msg,
-                                   const sensor_msgs::CompressedImageConstPtr& img_right_msg,
-                                   const sensor_msgs::CompressedImageConstPtr& img_left_msg) {
-    pcl::PointCloud<PointXYZRGBIntensity>::Ptr in(new pcl::PointCloud<PointXYZRGBIntensity>);
-    in->header.frame_id = cloud_msg->header.frame_id;
-    in->is_dense = false;
-    in->height = 1;
-
-    const size_t point_step = cloud_msg->point_step;
-    const size_t num_points = cloud_msg->width * cloud_msg->height;
-    const auto& data = cloud_msg->data;
-
-    in->points.reserve(num_points);
-
-    for (size_t i = 0; i < num_points; ++i) {
-        const uint8_t* ptr = &data[i * point_step];
-
-        PointXYZRGBIntensity pt;
-        std::memcpy(&pt.x,           ptr +  0, sizeof(float));
-        std::memcpy(&pt.y,           ptr +  4, sizeof(float));
-        std::memcpy(&pt.z,           ptr +  8, sizeof(float));
-        std::memcpy(&pt.intensity,   ptr + 16, sizeof(float));
-        std::memcpy(&pt.t,           ptr + 20, sizeof(uint32_t));
-        std::memcpy(&pt.reflectivity,ptr + 24, sizeof(uint16_t));
-        std::memcpy(&pt.ring,        ptr + 26, sizeof(uint16_t));
-        std::memcpy(&pt.ambient,     ptr + 28, sizeof(uint16_t));
-        std::memcpy(&pt.range,       ptr + 32, sizeof(uint32_t));
-        pt.rgb = 0;
-
-        in->points.push_back(pt);
-    }
-
-=======
-template<typename T>
-typename T::value_type PointCloudColorizer::findClosestBefore(const T& buffer, ros::Time reference_time) {
-    typename T::value_type best_match = nullptr;
-    for (const auto& msg : buffer) {
-        double diff = (reference_time - msg->header.stamp).toSec();
-        if (diff >= 0.0 && diff <= max_time_offset_)
-            if (!best_match || msg->header.stamp > best_match->header.stamp)
-                best_match = msg;
-    }
-    return best_match;
-}
-
-// ── Main processing callback ──────────────────────────────────────────────────
-
-void PointCloudColorizer::callback(const sensor_msgs::PointCloud2ConstPtr& cloud_msg,
-                                   const sensor_msgs::CompressedImageConstPtr& img_right_msg,
-                                   const sensor_msgs::CompressedImageConstPtr& img_left_msg,
-                                   ros::Time t_lidar,
-                                   ros::Time t_cam)
-{
-    // Unpack point cloud
-    pcl::PointCloud<PointXYZRGBIntensity>::Ptr in(new pcl::PointCloud<PointXYZRGBIntensity>);
-    in->header.frame_id = cloud_msg->header.frame_id;
-    in->is_dense = false; in->height = 1;
-
-    const size_t point_step = cloud_msg->point_step;
-    const size_t num_points = cloud_msg->width * cloud_msg->height;
-    in->points.reserve(num_points);
-
-    for (size_t i = 0; i < num_points; ++i) {
-        const uint8_t* ptr = &cloud_msg->data[i * point_step];
-        PointXYZRGBIntensity pt;
-        std::memcpy(&pt.x,            ptr +  0, sizeof(float));
-        std::memcpy(&pt.y,            ptr +  4, sizeof(float));
-        std::memcpy(&pt.z,            ptr +  8, sizeof(float));
-        std::memcpy(&pt.intensity,    ptr + 16, sizeof(float));
-        std::memcpy(&pt.t,            ptr + 20, sizeof(uint32_t));
-        std::memcpy(&pt.reflectivity, ptr + 24, sizeof(uint16_t));
-        std::memcpy(&pt.ring,         ptr + 26, sizeof(uint16_t));
-        std::memcpy(&pt.ambient,      ptr + 28, sizeof(uint16_t));
-        std::memcpy(&pt.range,        ptr + 32, sizeof(uint32_t));
-        pt.rgb = 0;
-        in->points.push_back(pt);
-    }
->>>>>>> 63209a76e848815144b08cf14641af794e33ba63
-    in->width = in->points.size();
-
-    auto out = boost::make_shared<pcl::PointCloud<PointXYZRGBIntensity>>();
-    out->header.frame_id = cloud_msg->header.frame_id;
-<<<<<<< HEAD
-    out->is_dense = false;
-    out->height = 1;
-
-    if (keep_uncolored_points_) {
-        out->points = in->points; // pre-fill with all points
-    } else {
-        out->points.clear(); // selectively populate
-    }
-
-    std::vector<cv::Point3f> P3;
-    for (auto& p : in->points) P3.emplace_back(p.x, p.y, p.z);
-
-    cv::Mat img_right = cv::imdecode(cv::Mat(img_right_msg->data), cv::IMREAD_COLOR);
-    cv::Mat img_left  = cv::imdecode(cv::Mat(img_left_msg->data),  cv::IMREAD_COLOR);
-    
-    colorize(P3, img_right, T_lidar_camera_right_, cv_K_right_, distCoeffs_right_, distortion_model_right_,
-                width_right_, height_right_, true, false, out, in);
-    colorize(P3, img_left, T_lidar_camera_left_, cv_K_left_, distCoeffs_left_, distortion_model_left_,
-                width_left_, height_left_, false, true, out, in);
-
-    out->width = out->points.size();
-
-    // Remove NaNs before publishing
-=======
-    out->is_dense = false; out->height = 1;
-    if (keep_uncolored_points_) out->points = in->points;
-
-    std::vector<cv::Point3f> P3;
-    P3.reserve(in->points.size());
-    for (const auto& p : in->points)
-        P3.emplace_back(p.x, p.y, p.z);
-
-    // Decode images
-    cv::Mat img_right = cv::imdecode(cv::Mat(img_right_msg->data), cv::IMREAD_COLOR);
-    cv::Mat img_left  = cv::imdecode(cv::Mat(img_left_msg->data),  cv::IMREAD_COLOR);
-
-    // Build intrinsics
-    auto buildK = [](const sensor_msgs::CameraInfo& info) {
-        cv::Mat_<double> K(3, 3);
-        K << info.K[0], 0.0, info.K[2], 0.0, info.K[4], info.K[5], 0.0, 0.0, 1.0;
-        return K;
-    };
-    auto buildDist = [](const sensor_msgs::CameraInfo& info) {
-        cv::Mat d(info.D, true); return d.reshape(1, 1);
-    };
-
-    // Compute IMU-compensated cam-from-lidar transforms (one per camera, own timestamp)
-    Eigen::Matrix4d T_right, T_left;
-    if (!computeCamFromLidarIMU(t_lidar, img_right_msg->header.stamp,
-                                cam_info_right_->header.frame_id, T_right) ||
-        !computeCamFromLidarIMU(t_lidar, img_left_msg->header.stamp,
-                                cam_info_left_->header.frame_id,  T_left)) {
-        ROS_WARN_THROTTLE(2.0, "[ColoriseScan] Transform failed, skipping scan t=%.3f",
-                          t_lidar.toSec());
-        return;
-    }
-
-    // Colorize
-    colorize(P3, img_right, T_right,
-             buildK(*cam_info_right_), buildDist(*cam_info_right_),
-             cam_info_right_->distortion_model,
-             (int)cam_info_right_->width, (int)cam_info_right_->height,
-             out, in, static_cast<float>(max_lidar_z_));
-    colorize(P3, img_left, T_left,
-             buildK(*cam_info_left_), buildDist(*cam_info_left_),
-             cam_info_left_->distortion_model,
-             (int)cam_info_left_->width, (int)cam_info_left_->height,
-             out, in, static_cast<float>(max_lidar_z_));
-
-    out->width = out->points.size();
-
-    // Remove NaN and publish
->>>>>>> 63209a76e848815144b08cf14641af794e33ba63
-    pcl::PointCloud<PointXYZRGBIntensity>::Ptr cleaned(new pcl::PointCloud<PointXYZRGBIntensity>);
-    std::vector<int> indices;
-    pcl::removeNaNFromPointCloud(*out, *cleaned, indices);
-
-    sensor_msgs::PointCloud2 out_msg;
-    pcl::PCLPointCloud2 pcl_pc2;
-    pcl::toPCLPointCloud2(*cleaned, pcl_pc2);
-    pcl_conversions::fromPCL(pcl_pc2, out_msg);
-    out_msg.header = cloud_msg->header;
-    pub_.publish(out_msg);
-}
-
-<<<<<<< HEAD
-void PointCloudColorizer::colorize(const std::vector<cv::Point3f>& P3, const cv::Mat& img,
-                                   const Eigen::Matrix4d& T_camera_lidar, const cv::Mat& K, const cv::Mat& dist,
-                                   const std::string& distortion_model, int width, int height,
-                                   bool is_right, bool mirror_u,
-                                   pcl::PointCloud<PointXYZRGBIntensity>::Ptr& out,
-                                   const pcl::PointCloud<PointXYZRGBIntensity>::Ptr& in) {
-    Eigen::Matrix4d T = T_camera_lidar.inverse();
-    Eigen::Matrix3d R_e = T.block<3,3>(0,0);
-    Eigen::Vector3d t_e = T.block<3,1>(0,3);
-
-    cv::Mat R_cv, rvec, tvec(3,1,CV_64F);
-    cv::eigen2cv(R_e, R_cv); cv::Rodrigues(R_cv, rvec);
-    for (int i = 0; i < 3; ++i) tvec.at<double>(i,0) = t_e(i);
-=======
-// ── colorize ──────────────────────────────────────────────────────────────────
-
-void PointCloudColorizer::colorize(const std::vector<cv::Point3f>& P3,
-                                   const cv::Mat& img,
-                                   const Eigen::Matrix4d& T_cam_from_lidar,
-                                   const cv::Mat& K,
-                                   const cv::Mat& dist,
-                                   const std::string& distortion_model,
-                                   int width, int height,
-                                   pcl::PointCloud<PointXYZRGBIntensity>::Ptr& out,
-                                   const pcl::PointCloud<PointXYZRGBIntensity>::Ptr& in,
-                                   float source_z_max)
-{
-    Eigen::Matrix3d R_e = T_cam_from_lidar.block<3,3>(0,0);
-    Eigen::Vector3d t_e = T_cam_from_lidar.block<3,1>(0,3);
-    cv::Mat R_cv, rvec, tvec(3, 1, CV_64F);
-    cv::eigen2cv(R_e, R_cv);
-    cv::Rodrigues(R_cv, rvec);
-    for (int i = 0; i < 3; ++i) tvec.at<double>(i, 0) = t_e(i);
->>>>>>> 63209a76e848815144b08cf14641af794e33ba63
-
-    std::vector<cv::Point2f> P2;
-    if (distortion_model == "equidistant")
-        cv::fisheye::projectPoints(P3, P2, rvec, tvec, K, dist);
-    else
-        cv::projectPoints(P3, P2, rvec, tvec, K, dist);
-
-    for (size_t i = 0; i < P2.size(); ++i) {
-<<<<<<< HEAD
-        if (P3[i].z > max_lidar_z_) continue; // skip this point
-        Eigen::Vector4d pt_cam = T * Eigen::Vector4d(P3[i].x, P3[i].y, P3[i].z, 1.0);
-        bool valid = pt_cam.z() > 0;
-        int u = std::round(P2[i].x), v = std::round(P2[i].y);
-        valid &= (u >= 0 && u < width && v >= 0 && v < height);
-
-        if (!keep_uncolored_points_ && !valid) continue; // Skip uncolored points if flag is false
-
-        uint32_t rgb = 0; // default black
-=======
-        if (P3[i].z > source_z_max) continue;
-
-        Eigen::Vector4d pt_cam = T_cam_from_lidar *
-                                 Eigen::Vector4d(P3[i].x, P3[i].y, P3[i].z, 1.0);
-        bool valid = pt_cam.z() > 0;
-        int u = std::round(P2[i].x);
-        int v = std::round(P2[i].y);
-        valid &= (u >= 0 && u < width && v >= 0 && v < height);
-
-        if (!keep_uncolored_points_ && !valid) continue;
-
-        uint32_t rgb = 0;
->>>>>>> 63209a76e848815144b08cf14641af794e33ba63
-        if (valid) {
-            cv::Vec3b c = img.at<cv::Vec3b>(v, u);
-            rgb = (uint32_t(c[2]) << 16 | uint32_t(c[1]) << 8 | uint32_t(c[0]));
+        if (candidates.empty()) {
+            ROS_WARN_THROTTLE(5.0, "[ColoriseScan] max_lidar_z=%.1f rejected every point "
+                              "in this sweep", p_.max_lidar_z);
+            return;
         }
 
-        if (keep_uncolored_points_) {
-<<<<<<< HEAD
-            if (rgb != 0) // only overwrite if color is valid
-                out->points[i].rgb = rgb;
-=======
-            if (rgb != 0) out->points[i].rgb = rgb;
->>>>>>> 63209a76e848815144b08cf14641af794e33ba63
-        } else if (valid) {
+        // Accumulate colour per point so a point seen by several cameras gets
+        // the average rather than whichever camera happened to run last.
+        std::vector<Eigen::Vector3i> sum(P3.size(), Eigen::Vector3i::Zero());
+        std::vector<int>             cnt(P3.size(), 0);
+
+        for (size_t i = 0; i < p_.cameras.size(); ++i) {
+            const CameraCalib& cam = p_.cameras[i];
+
+            cv::Mat img = cv::imdecode(cv::Mat(imgs[i]->data), cv::IMREAD_COLOR);
+            if (img.empty()) {
+                ROS_WARN_THROTTLE(2.0, "[ColoriseScan] failed to decode image from '%s'",
+                                  cam.name.c_str());
+                continue;
+            }
+
+            Eigen::Matrix4d T_cam_from_lidar;
+            if (!computeCamFromLidar(cam, t_lidar, imgs[i]->header.stamp, T_cam_from_lidar))
+                continue;
+
+            projectAndSample(P3, candidates, img, cam, T_cam_from_lidar,
+                             p_.occlusion_check, p_.occlusion_cell_px,
+                             p_.occlusion_depth_tol,
+                             [&](int idx, std::uint32_t rgb) {
+                                 sum[idx] += Eigen::Vector3i((rgb >> 16) & 0xFF,
+                                                             (rgb >>  8) & 0xFF,
+                                                             (rgb      ) & 0xFF);
+                                 cnt[idx] += 1;
+                             });
+        }
+
+        // Build the output cloud.
+        auto out = boost::make_shared<pcl::PointCloud<PointXYZRGBIntensity>>();
+        out->header.frame_id = cloud_msg->header.frame_id;
+        out->is_dense = false;
+        out->height   = 1;
+        out->points.reserve(p_.keep_uncolored_points ? in->points.size() : P3.size() / 4);
+
+        size_t coloured = 0;
+        for (size_t i = 0; i < in->points.size(); ++i) {
+            const bool has_colour = cnt[i] > 0;
+            if (!has_colour && !p_.keep_uncolored_points) continue;
+
             PointXYZRGBIntensity pt = in->points[i];
-            pt.rgb = rgb;
+            if (has_colour) {
+                const Eigen::Vector3i c = sum[i] / cnt[i];
+                pt.rgb = (static_cast<std::uint32_t>(c.x()) << 16) |
+                         (static_cast<std::uint32_t>(c.y()) <<  8) |
+                         (static_cast<std::uint32_t>(c.z()));
+                ++coloured;
+            } else {
+                pt.rgb = 0;
+            }
             out->points.push_back(pt);
         }
-    }
-}
+        out->width = out->points.size();
 
-<<<<<<< HEAD
-=======
-// ── main ──────────────────────────────────────────────────────────────────────
->>>>>>> 63209a76e848815144b08cf14641af794e33ba63
+        ROS_INFO_THROTTLE(2.0, "[ColoriseScan] t=%.3f  %zu/%zu points coloured (%.1f%%)",
+                          t_lidar.toSec(), coloured, in->points.size(),
+                          in->points.empty() ? 0.0 : 100.0 * coloured / in->points.size());
+
+        pcl::PointCloud<PointXYZRGBIntensity>::Ptr cleaned(
+            new pcl::PointCloud<PointXYZRGBIntensity>);
+        std::vector<int> indices;
+        pcl::removeNaNFromPointCloud(*out, *cleaned, indices);
+
+        sensor_msgs::PointCloud2 out_msg;
+        pcl::PCLPointCloud2 pcl_pc2;
+        pcl::toPCLPointCloud2(*cleaned, pcl_pc2);
+        pcl_conversions::fromPCL(pcl_pc2, out_msg);
+        out_msg.header = cloud_msg->header;
+        pub_.publish(out_msg);
+    }
+
+    // Ouster PointCloud2 -> PointXYZRGBIntensity. Field offsets are resolved
+    // from the message rather than hardcoded, so a layout change is reported
+    // instead of silently producing garbage.
+    bool unpackCloud(const sensor_msgs::PointCloud2ConstPtr& msg,
+                     pcl::PointCloud<PointXYZRGBIntensity>::Ptr& out) {
+        auto offsetOf = [&](const std::string& name) -> int {
+            for (const auto& f : msg->fields)
+                if (f.name == name) return static_cast<int>(f.offset);
+            return -1;
+        };
+
+        const int o_x = offsetOf("x"), o_y = offsetOf("y"), o_z = offsetOf("z");
+        if (o_x < 0 || o_y < 0 || o_z < 0) {
+            ROS_ERROR_THROTTLE(5.0, "[ColoriseScan] cloud on %s has no x/y/z fields",
+                               p_.pointcloud_topic.c_str());
+            return false;
+        }
+        const int o_i = offsetOf("intensity"), o_t = offsetOf("t");
+        const int o_r = offsetOf("reflectivity"), o_ring = offsetOf("ring");
+        const int o_a = offsetOf("ambient"), o_range = offsetOf("range");
+
+        const size_t step = msg->point_step;
+        const size_t n    = static_cast<size_t>(msg->width) * msg->height;
+
+        out->header.frame_id = msg->header.frame_id;
+        out->is_dense = false;
+        out->height   = 1;
+        out->points.resize(n);
+
+        for (size_t i = 0; i < n; ++i) {
+            const uint8_t* ptr = &msg->data[i * step];
+            PointXYZRGBIntensity& pt = out->points[i];
+            std::memcpy(&pt.x, ptr + o_x, sizeof(float));
+            std::memcpy(&pt.y, ptr + o_y, sizeof(float));
+            std::memcpy(&pt.z, ptr + o_z, sizeof(float));
+            pt.intensity    = (o_i     >= 0) ? *reinterpret_cast<const float*>(ptr + o_i) : 0.f;
+            pt.t            = (o_t     >= 0) ? *reinterpret_cast<const std::uint32_t*>(ptr + o_t) : 0;
+            pt.reflectivity = (o_r     >= 0) ? *reinterpret_cast<const std::uint16_t*>(ptr + o_r) : 0;
+            pt.ring         = (o_ring  >= 0) ? *reinterpret_cast<const std::uint16_t*>(ptr + o_ring) : 0;
+            pt.ambient      = (o_a     >= 0) ? *reinterpret_cast<const std::uint16_t*>(ptr + o_a) : 0;
+            pt.range        = (o_range >= 0) ? *reinterpret_cast<const std::uint32_t*>(ptr + o_range) : 0;
+            pt.rgb          = 0;
+        }
+        out->width = n;
+        return true;
+    }
+
+    ros::NodeHandle nh_;
+    CommonParams    p_;
+
+    ros::Subscriber              sub_cloud_, sub_imu_, sub_odom_;
+    std::vector<ros::Subscriber> sub_imgs_;
+    ros::Publisher               pub_;
+
+    std::deque<sensor_msgs::PointCloud2ConstPtr>                 cloud_buffer_;
+    std::vector<std::deque<sensor_msgs::CompressedImageConstPtr>> img_buffers_;
+
+    ImuBuffer      imu_;
+    OdomTrajectory odom_;
+};
 
 int main(int argc, char** argv) {
-    ros::init(argc, argv, "colorize_pointcloud_node");
+    ros::init(argc, argv, "colorise_scan_node");
     ros::NodeHandle nh("~");
 
-<<<<<<< HEAD
+    std::string default_config =
+        ros::package::getPath("point_cloud_projection") + "/configs/config.yaml";
     std::string config_path;
-    nh.param("config_path", config_path, std::string("../configs/config.yaml"));
-    cv::FileStorage fs(config_path, cv::FileStorage::READ);
-    double startup_delay;
-    if (fs.isOpened()) fs["initial_startup_delay"] >> startup_delay;
-    fs.release();
+    nh.param("config_path", config_path, default_config);
 
-    ROS_INFO("Waiting %.2f sec for initial buffer fill...", startup_delay);
-=======
-    std::string pkg = ros::package::getPath("point_cloud_projection");
-    std::string config_path;
-    nh.param("config_path", config_path, pkg + "/configs/config.yaml");
+    CommonParams params;
+    try {
+        loadCommonParams(config_path, params);
 
-    cv::FileStorage fs(config_path, cv::FileStorage::READ);
-    double startup_delay = 0.0;
-    if (fs.isOpened()) fs["initial_startup_delay"] >> startup_delay;
-    fs.release();
+        // Optional ROS-param override, so the mode can be switched from the
+        // launch file without editing config.yaml.
+        std::string mode_override;
+        nh.param("compensation_mode", mode_override, std::string(""));
+        if (!mode_override.empty())
+            params.compensation_mode = parseCompMode(mode_override);
+    } catch (const std::exception& e) {
+        ROS_FATAL("[ColoriseScan] configuration error: %s", e.what());
+        return 1;
+    }
 
-    ROS_INFO("[ColoriseScan] Waiting %.2f sec for sensor startup...", startup_delay);
->>>>>>> 63209a76e848815144b08cf14641af794e33ba63
-    ros::Duration(startup_delay).sleep();
+    ROS_INFO("[ColoriseScan] waiting %.2f s for sensor startup...",
+             params.initial_startup_delay);
+    ros::Duration(params.initial_startup_delay).sleep();
 
-    PointCloudColorizer node(nh);
+    ScanColouriser node(nh, params);
     ros::spin();
     return 0;
 }

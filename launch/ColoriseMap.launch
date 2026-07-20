@@ -1,25 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
 <launch>
-  <arg name="config_path" default="$(find point_cloud_projection)/configs/config.yaml"/>
-<<<<<<< HEAD
+  <!-- Map colourisation: colours a pre-built point cloud map, filling in as the
+       cameras sweep over it.
 
-=======
->>>>>>> 63209a76e848815144b08cf14641af794e33ba63
+       You supply two things, named in config.yaml:
+
+         map_pcd_path   a point cloud map (PCD, XYZI), in the map frame
+         odom_csv_path  timestamped poses of the LIDAR in that same frame, as
+                        time,x,y,z,qx,qy,qz,qw
+
+       Both must come from the same run and agree with each other. How you
+       produce them is up to you; any SLAM or survey source will do. The CSV is
+       one pose per line, header row optional.
+
+       Start this first (loading the map and building its kd-tree takes a few
+       seconds), then play a bag in another terminal. See the README for the
+       exact rosbag play command; it is not repeated here because XML comments
+       cannot contain a double hyphen.
+
+       Poses come from the CSV, so no odometry or TF topics are needed. Play
+       slower than real time: projecting a multi million point map is slower
+       than the cameras deliver, and the node skips frames to keep up.
+
+       Ctrl-C saves the result to save_pcd_path.
+
+       If nothing colours, the map and the poses are not from the same run.
+
+       Args:
+         map_frame  frame the map PCD and the CSV poses are expressed in
+         rviz       set false to run headless -->
+
+  <arg name="config_path" default="$(find point_cloud_projection)/configs/config.yaml"/>
+  <arg name="map_frame"   default="odom"/>
+  <arg name="rviz"        default="true"/>
+  <!-- none | imu | odom. Empty means use whatever config.yaml says. -->
+  <arg name="compensation_mode" default=""/>
+
+  <!-- The map and poses live in a single frame and nothing else broadcasts it,
+       so give RViz a root to hang its Fixed Frame off. Without this it reports
+       "Fixed Frame [odom] does not exist" and draws nothing. -->
+  <node pkg="tf2_ros" type="static_transform_publisher" name="world_to_map_frame"
+        args="0 0 0 0 0 0 world $(arg map_frame)"/>
+
   <node pkg="point_cloud_projection"
         type="ColoriseMap"
         name="colorise_map_node"
-        output="screen">
-    <param name="config_path" value="$(arg config_path)"/>
-    <param name="save_pcd_path" value="$(find point_cloud_projection)/output/colored_map.pcd"/>
-    <param name="map_topic" value="/lio_sam/mapping/cloud_registered"/>
-<<<<<<< HEAD
-    <param name="odom_topic" value="/lio_sam/mapping/path"/>
-=======
-    <param name="odom_topic" value="/lio_sam/mapping/odometry"/>
->>>>>>> 63209a76e848815144b08cf14641af794e33ba63
-    <param name="min_color_frames" value="3"/>
+        output="screen"
+        required="true">
+    <param name="config_path"       value="$(arg config_path)"/>
+    <param name="compensation_mode" value="$(arg compensation_mode)"/>
+    <param name="map_frame"   value="$(arg map_frame)"/>
   </node>
 
-  <node name="rviz" pkg="rviz" type="rviz" args="-d $(find point_cloud_projection)/configs/vis.rviz">
-    <param name="output" value="screen"/>
-  </node>
+  <node if="$(arg rviz)" name="rviz" pkg="rviz" type="rviz"
+        args="-d $(find point_cloud_projection)/configs/vis_map.rviz"/>
 </launch>
