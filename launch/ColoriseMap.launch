@@ -1,6 +1,9 @@
 <launch>
   <arg name="config_path" default="$(find point_cloud_projection)/configs/config.yaml"/>
+<<<<<<< HEAD
 
+=======
+>>>>>>> 63209a76e848815144b08cf14641af794e33ba63
   <node pkg="point_cloud_projection"
         type="ColoriseMap"
         name="colorise_map_node"
@@ -8,7 +11,11 @@
     <param name="config_path" value="$(arg config_path)"/>
     <param name="save_pcd_path" value="$(find point_cloud_projection)/output/colored_map.pcd"/>
     <param name="map_topic" value="/lio_sam/mapping/cloud_registered"/>
+<<<<<<< HEAD
     <param name="odom_topic" value="/lio_sam/mapping/path"/>
+=======
+    <param name="odom_topic" value="/lio_sam/mapping/odometry"/>
+>>>>>>> 63209a76e848815144b08cf14641af794e33ba63
     <param name="min_color_frames" value="3"/>
   </node>
 
