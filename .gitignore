@@ -12,3 +12,6 @@ PCD/
 build/
 devel/
 install/
+
+# Editor
+.vscode/
