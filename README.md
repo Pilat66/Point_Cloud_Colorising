@@ -1,5 +1,4 @@
-# point_cloud_projection
-
+# Point Cloud Colorisation Toolbox
 Colourise lidar data with calibrated camera imagery
 
 Demo video: https://www.youtube.com/watch?v=wmdwf09vh_M
