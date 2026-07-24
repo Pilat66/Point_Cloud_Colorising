@@ -7,8 +7,8 @@ Two modes:
 
 | Mode | Colours | Needs |
 |---|---|---|
-| **Scan** | each instantaneous lidar sweep | nothing but the sensors |
-| **Map** | a pre-built point cloud map | a map PCD + a CSV of timestamped poses |
+| **Scan** | each instantaneous lidar sweep | sensor input |
+| **Map** | a pre-built point cloud map | a PCD map + a CSV of timestamped poses |
 
 **Scan** — each lidar sweep coloured from the cameras, live:
 
