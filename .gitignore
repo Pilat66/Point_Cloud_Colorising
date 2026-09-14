@@ -15,3 +15,16 @@ install/
 
 # Editor
 .vscode/
+
+# Input data (clouds, photos, trajectory, calibration)
+data/
+2026-09-08-18-56-45/
+
+# Python environment and caches
+venv/
+__pycache__/
+*.pyc
+
+# Standalone C++ build artefact copied into the package root; run-colorise.sh
+# finds colorise/build/colorise_offline on its own (build/ is ignored above).
+/colorise_offline

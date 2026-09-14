@@ -147,3 +147,74 @@ projected at once.
 
 ---
 
+## Offline colourisation (Python, ROS-free)
+
+`colorise_offline.py` reproduces the Map-mode projection pipeline (
+`projectAndSample` from `src/colorise.cpp`) as a standalone script. It needs only
+Python + `numpy` + `opencv-python` + `pyyaml` (+ `scipy` for the radius cull,
++ `laspy` only for `.las` input). No ROS, no catkin build.
+
+It reads exactly the artefacts this repo keeps in `./data`:
+
+| Input | Default | Notes |
+|---|---|---|
+| `--cloud` | `data/all_raw_points.pcd` | PCD (`x y z [nx ny nz] intensity [curvature …]`), any field set |
+| `--photos` | `data` | dir of images, capture time in the **filename** (epoch ns, e.g. `1788882722018994333.png`) |
+| `--trajectory` | `data/trajectory.csv` | lidar poses `time;x;y;z;roll;pitch;yaw` (Euler) or `time,x,y,z,qx,qy,qz,qw` |
+| `--camera` | `data/camera.yaml` | pinhole intrinsics `cam_fx,..cam_cy` + distortion `cam_d0..d4` |
+| `--calib` | `data/calib.json` | camera↔lidar extrinsic (see convention note below) |
+| `--output` | `coloured.pcd` | coloured cloud written as `x y z intensity rgb` PCD |
+
+```bash
+python3 colorise_offline.py --cloud data/all_raw_points.pcd --photos data \
+    --trajectory data/trajectory.csv --camera data/camera.yaml \
+    --calib data/calib.json --output coloured.pcd
+```
+
+Key flags: `--max-range`, `--min-camera-dist`, `--max-view-angle`, `--edge-margin`,
+`--min-color-frames`, `--keep-uncolored`, `--occlusion`, `--euler-order/--euler-units`,
+`--time-shift` (align photos from a different run), `--preview <png>`.
+
+### Extrinsic direction (calib.json)
+
+Per `direct_visual_lidar_calibration` / FAST-LIVO2 convention, `T_camera_lidar`
+maps points **from the lidar frame into the camera frame** ("A_from_B") and is
+used as-is (no inversion). The example `data/calib.json` stores the same
+quantity under the mirror name `results.T_lidar_camera` (7 numbers
+`x,y,z,qx,qy,qz,qw`); the resolver inverts it automatically. Direction is
+auto-detected from the key name and can be forced with `--extrinsic-direction`.
+
+> Note: photos and trajectory must come from the same run. The tool prints a
+> warning (and covers nothing) when the photo time range does not intersect the
+> trajectory; use `--time-shift` only for a known, constant offset.
+
+### Brightness alignment of the photo series
+
+`align_brightness.py` levels a photo series to its brightest frame before
+colourisation. The reference is the frame with the highest value of the chosen
+brightness statistic; every other frame is brought to it. Results go to a
+sub-folder (`--out-dir`, default `aligned`) next to the originals, the reference
+is copied as is.
+
+```bash
+python3 align_brightness.py data/1 --stat top25
+```
+
+| Flag | Meaning |
+|---|---|
+| `--stat` | brightness statistic (channel **L** of LAB, 0-255): `mean`, `median`, `top50` (mean of the brightest 50% of pixels), `top25` (brightest 25%, **default**), `max` (robust maximum = 99th percentile — a raw pixel maximum sits at 255 in the sky and does not separate frames) |
+| `--method` | `gain` (**default**) scales L by `stat(ref)/stat(src)`; `hist` matches the L histograms instead |
+| `--out-dir` | output folder name or absolute path, default `aligned` |
+| `--max-gain` | clamp the gain to `[1/N, N]`, default `4.0`, `0` disables the clamp |
+| `--no-resize` | do not resize frames to the reference size (such frames are skipped) |
+| `--ext`, `--dry-run` | image extensions, and analysis only (nothing is written) |
+
+Only the L channel is touched, so the colours stay as captured. With
+`--method gain` a residual spread is expected: frames whose highlights are
+clipped at 255 cannot be pushed above the value they already reached. The run
+prints the spread before and after, so the effect is visible per folder.
+
+`--stat mean --method hist` reproduces the behaviour of the previous version of
+the script. Dependencies: `numpy` + `opencv-python` (`scikit-image` is not
+needed).
+
