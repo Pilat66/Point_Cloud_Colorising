@@ -218,15 +218,15 @@ cmp /tmp/coloured_py.pcd /tmp/coloured_cpp.pcd   # ожидается полно
 ### 1. Начало итерации
 
 Перед началом выполнения:
-- Сгенерируй уникальный идентификатор в формате `ITER-YYYYMMDDhhmiss` (например, ITER-20260701120101).
+- Сгенерируй уникальный идентификатор в формате `ITER-YYYYMMDD-hhmiss` (например, ITER-20260701-120101).
 - Проверь, что нет незакоммиченных изменений: выполни `git status`. Если есть - сообщи пользователю и предложи решить, что с ними делать. Если рабочее дерево не чистое - не выполнять изменения до решения пользователя.
 - **Важно:** Хэш коммита не сохраняется в YAML-файле итерации. Файл описывает задачу и изменения, а не фиксирует ссылки.
 - Создай YAML-файл итерации в папке `cline/iterations/YYYY-MM-DD/`:
   ```yaml
-  # ITER-YYYYMMDDhhmiss
+  # ITER-YYYYMMDD-hhmiss
   ---
   meta:
-    id: ITER-YYYYMMDDhhmiss
+    id: ITER-YYYYMMDD-hhmiss
     status: started  # started | completed
     date_started: YYYY-MM-DD HH:MM:SS
     date_completed: null
@@ -270,7 +270,7 @@ cmp /tmp/coloured_py.pcd /tmp/coloured_cpp.pcd   # ожидается полно
 1. **Обнови YAML-файл итерации**:
    ```yaml
    meta:
-     id: ITER-YYYYMMDDhhmiss
+     id: ITER-YYYYMMDD-hhmiss
      status: completed
      date_started: YYYY-MM-DD HH:MM:SS
      date_completed: YYYY-MM-DD HH:MM:SS
@@ -305,11 +305,11 @@ cmp /tmp/coloured_py.pcd /tmp/coloured_cpp.pcd   # ожидается полно
 
 3. Создай **ОДИН** коммит с сообщением в формате:
    ```
-   [ITER-YYYYMMDDhhmiss] <type>: <краткое описание задачи>
+   [ITER-YYYYMMDD-hhmiss] <type>: <краткое описание задачи>
 
    <детальное описание всех изменений>
 
-   Iteration: ITER-YYYYMMDDhhmiss
+   Iteration: ITER-YYYYMMDD-hhmiss
    ```
    Где `<type>` - один из: `feat`, `fix`, `refactor`, `docs`, `test`, `perf`, `chore`.
 
@@ -325,14 +325,14 @@ cmp /tmp/coloured_py.pcd /tmp/coloured_cpp.pcd   # ожидается полно
 
 **Пример полного сообщения коммита:**
 ```
-[ITER-20260914220101] fix: привёл гейт max_view_angle в C++ порту к Python-версии
+[ITER-20260914-220101] fix: привёл гейт max_view_angle в C++ порту к Python-версии
 
 Changes:
 - Modified: colorise/src/project.cpp (гейт по полууглу приведён к Python-версии)
 - Modified: colorise/README.md (описано поведение гейта)
 - CHANGELOG: обновлён CHANGELOG.md
 
-Iteration: ITER-20260914220101
+Iteration: ITER-20260914-220101
 ```
 
 ### 4. Отправка изменений
@@ -358,7 +358,7 @@ git push origin <branch>
 ## Восстановление после сбоя
 
 Если итерация была прервана (ошибка, отключение, ручная остановка):
-1. Проверь наличие YAML-файла итерации в `cline/iterations/YYYY-MM-DD/ITER-YYYYMMDDhhmiss.yaml`.
+1. Проверь наличие YAML-файла итерации в `cline/iterations/YYYY-MM-DD/ITER-YYYYMMDD-hhmiss.yaml`.
 2. Если файл существует и `status: started`:
    - Прочитай файл, чтобы восстановить контекст.
    - Спроси пользователя: продолжить итерацию или откатиться до последнего коммита.
@@ -372,11 +372,11 @@ git push origin <branch>
 
 Сообщение коммита:
 ```text
-[ITER-YYYYMMDDhhmiss] <type>: <краткое описание>
+[ITER-YYYYMMDD-hhmiss] <type>: <краткое описание>
 
 <детальный список изменений>
 
-Iteration: ITER-YYYYMMDDhhmiss
+Iteration: ITER-YYYYMMDD-hhmiss
 ```
 
 Язык сообщения — русский (как в истории репозитория); тип — conventional commits.
@@ -398,7 +398,7 @@ Iteration: ITER-YYYYMMDDhhmiss
 ## Commit Report
 
 После создания коммита выведи:
-- iteration_id (ITER-YYYYMMDDhhmiss);
+- iteration_id (ITER-YYYYMMDD-hhmiss);
 - изменённые файлы;
 - обновлён ли `CHANGELOG.md`;
 - краткое описание изменений.
