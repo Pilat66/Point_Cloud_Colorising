@@ -15,6 +15,10 @@
     Точки считаются порциями (--chunk, по умолчанию 1000 штук) и сразу
     пишутся в файлы, поэтому память не зависит от размера фикстуры.
 
+    Дополнительно в конец облака добавляются 100 точек (25 на каждую сторону) —
+    рамка кадра снимка: она отмечает, где находится «виртуальная фотография»,
+    в той же плоскости и на том же расстоянии, что и облако.
+
     Время снимка берётся из имени файла (эпоха в нс/мс/с), поза камеры — из
     траектории и калибровки, той же цепочкой, что и в colorise_offline.
 
@@ -77,17 +81,46 @@ def pcd_header(n):
             "COUNT 1 1 1 1 1\nWIDTH %d\nHEIGHT 1\nPOINTS %d\nDATA binary\n" % (n, n))
 
 
-def image_corner_rays(cam):
-    """Направления (x/z, y/z) лучей через четыре угла кадра, с учётом модели."""
-    w, h = cam["width"], cam["height"]
-    pts = np.array([[0.0, 0.0], [w - 1.0, 0.0], [w - 1.0, h - 1.0], [0.0, h - 1.0]],
-                   np.float64).reshape(-1, 1, 2)
+def pixel_rays(cam, pixels):
+    """Направления (x/z, y/z) лучей через заданные пиксели, с учётом модели."""
+    pts = np.asarray(pixels, np.float64).reshape(-1, 1, 2)
     if cam["model"] == "fisheye":
         out = cv2.fisheye.undistortPoints(pts, cam["K"], cam["dist"])
     else:
         out = cv2.undistortPoints(pts, cam["K"], cam["dist"])
     out = np.asarray(out[0] if isinstance(out, tuple) else out, np.float64)
     return out.reshape(-1, 2)
+
+
+def image_corner_rays(cam):
+    """Лучи через четыре угла кадра (по часовой: ЛВ, ПВ, ПН, ЛН)."""
+    w, h = cam["width"], cam["height"]
+    return pixel_rays(cam, [[0.0, 0.0], [w - 1.0, 0.0], [w - 1.0, h - 1.0], [0.0, h - 1.0]])
+
+
+def photo_frame_points(cam, distance, per_side=25):
+    """
+    Точки по периметру кадра снимка: per_side на сторону (25 -> ровно 100).
+    Пиксели равномерно раскладываются по границе изображения, затем их лучи
+    пересекаются с плоскостью z=distance, поэтому проекция каждой точки лежит
+    точно на границе кадра — рамка отмечает именно место фотографии.
+    """
+    w, h = cam["width"], cam["height"]
+    n = per_side * 4
+    corners = np.array([[0.0, 0.0], [w - 1.0, 0.0], [w - 1.0, h - 1.0], [0.0, h - 1.0]],
+                       np.float64)
+    pix = np.empty((n, 2), np.float64)
+    for i in range(n):
+        seg = (i / n) * 4.0
+        k = int(seg) % 4
+        f = seg - int(seg)
+        pix[i] = corners[k] * (1.0 - f) + corners[(k + 1) % 4] * f
+    rays = pixel_rays(cam, pix)
+    pts = np.empty((n, 3), np.float64)
+    pts[:, 0] = distance * rays[:, 0]
+    pts[:, 1] = distance * rays[:, 1]
+    pts[:, 2] = distance
+    return pts
 
 
 def plane_rect(cam, distance, margin):
@@ -177,9 +210,13 @@ def main(argv=None):
     R_wc, o_wc = T_world_cam[:3, :3], T_world_cam[:3, 3]
     dt = np.dtype([("x", "<f4"), ("y", "<f4"), ("z", "<f4"),
                    ("intensity", "<f4"), ("rgb", "<u4")])
+    # Рамка кадра снимка: 100 точек по периметру (25 на сторону) — та же
+    # плоскость и то же место, где находится «виртуальная фотография».
+    frame_cam = photo_frame_points(cam, args.distance)
+    frame_xyz = (R_wc @ frame_cam.T).T + o_wc
     written = 0
     with open(out_path, "wb") as fc:
-        fc.write(pcd_header(n_total).encode("ascii"))
+        fc.write(pcd_header(n_total + frame_cam.shape[0]).encode("ascii"))
         for r0 in range(0, ny, rows_per_chunk):
             yy = ys[r0:r0 + rows_per_chunk]
             gx, gy = np.meshgrid(xs, yy)
@@ -192,7 +229,15 @@ def main(argv=None):
             rec["rgb"] = 0
             fc.write(rec.tobytes())
             written += p_cam.shape[0]
+        rec = np.empty(frame_cam.shape[0], dt)
+        rec["x"], rec["y"], rec["z"] = frame_xyz[:, 0], frame_xyz[:, 1], frame_xyz[:, 2]
+        rec["intensity"] = 0.0
+        rec["rgb"] = 0
+        fc.write(rec.tobytes())
+        written += frame_cam.shape[0]
     print("[cloud] {} точек -> {}".format(written, out_path))
+    print("[photo-frame] {} точек по периметру кадра ({} на сторону), z = {:g} м".format(
+        frame_cam.shape[0], frame_cam.shape[0] // 4, args.distance))
 
     vis_area = (args.distance * w / cam["K"][0, 0]) * (args.distance * h / cam["K"][1, 1])
     print("[plane] {:.2f} x {:.2f} м, шаг сетки {:.4f} м, сетка {}x{}".format(
