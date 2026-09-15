@@ -6,8 +6,7 @@
     Создать детерминированную фикстуру для проверки алгоритмов раскраски:
     облако точек в плоскости, параллельной плоскости изображения выбранного
     снимка, на заданном расстоянии от камеры. Скрипт НИЧЕГО не раскрашивает —
-    он готовит только вход (и, при желании, эталонный список ожидаемых
-    пикселей и цветов).
+    он готовит только облако.
 
     Одно и то же облако прогоняется через разные алгоритмы
     (colorise_offline C++ и Python, ColoriseMap, будущие оптимизированные
@@ -25,9 +24,7 @@
         --calib data/calib.json --distance 5 --ppm 100
 
 Результат
-    <имя фото>-plane-<d>m-<ppm>ppm.pcd            облако (x y z intensity rgb)
-    <имя фото>-plane-<d>m-<ppm>ppm-expected.csv   эталон:
-        index;x;y;z;u;v;inside;R;G;B
+    <имя фото>-plane-<d>m-<ppm>ppm.pcd   облако (x y z intensity rgb)
 
 Зависимости: numpy, opencv-python, pyyaml; загрузчики переиспользуются из
 colorise_offline.py (импорт безопасен — там всё под if __name__).
@@ -59,9 +56,6 @@ def parse_args(argv=None):
     ap.add_argument("--margin", type=float, default=1.05,
                     help="запас за границы кадра, доли (1.0 = ровно по углам) [1.05]")
     ap.add_argument("--output", default="", help="куда писать облако [<имя фото>-plane-...pcd]")
-    ap.add_argument("--expected-csv", default="",
-                    help="куда писать эталон [<облако без .pcd>-expected.csv]")
-    ap.add_argument("--no-expected", action="store_true", help="не писать эталонный CSV")
     ap.add_argument("--chunk", type=int, default=1000,
                     help="сколько точек считать и писать за один заход [1000]")
     ap.add_argument("--time-tolerance", type=float, default=1.0,
@@ -173,28 +167,17 @@ def main(argv=None):
     xs = cx + (np.arange(nx) - 0.5 * (nx - 1)) * step
     ys = cy + (np.arange(ny) - 0.5 * (ny - 1)) * step
     w, h = cam["width"], cam["height"]
-    img = cv2.imread(args.photo, cv2.IMREAD_COLOR)
-    if img is None:
-        raise SystemExit("не удалось прочитать изображение: " + args.photo)
-
     base = "{}-plane-{:g}m-{:g}ppm".format(stem, args.distance, args.ppm)
     out_path = args.output or (base + ".pcd")
-    exp_path = args.expected_csv or (os.path.splitext(out_path)[0] + "-expected.csv")
 
     # Потоковая генерация: точки считаются порциями по ~--chunk штук и сразу
-    # пишутся в файлы, поэтому память не зависит от размера фикстуры.
+    # пишутся в файл, поэтому память не зависит от размера фикстуры.
     n_total = nx * ny
     rows_per_chunk = max(1, int(args.chunk) // nx)
-    rvec = np.zeros((3, 1), np.float64)
-    tvec = np.zeros((3, 1), np.float64)
     R_wc, o_wc = T_world_cam[:3, :3], T_world_cam[:3, 3]
     dt = np.dtype([("x", "<f4"), ("y", "<f4"), ("z", "<f4"),
                    ("intensity", "<f4"), ("rgb", "<u4")])
-    n_inside = 0
     written = 0
-    fe = None if args.no_expected else open(exp_path, "w")
-    if fe is not None:
-        fe.write("index;x;y;z;u;v;inside;R;G;B\n")
     with open(out_path, "wb") as fc:
         fc.write(pcd_header(n_total).encode("ascii"))
         for r0 in range(0, ny, rows_per_chunk):
@@ -202,49 +185,20 @@ def main(argv=None):
             gx, gy = np.meshgrid(xs, yy)
             p_cam = np.stack([gx.ravel(), gy.ravel(),
                               np.full(gx.size, args.distance)], axis=1)
-            if cam["model"] == "fisheye":
-                res = cv2.fisheye.projectPoints(p_cam.reshape(-1, 1, 3), rvec, tvec,
-                                                cam["K"], cam["dist"])
-            else:
-                res = cv2.projectPoints(p_cam.reshape(-1, 1, 3), rvec, tvec,
-                                        cam["K"], cam["dist"])
-            uv = np.asarray(res[0] if isinstance(res, tuple) else res,
-                            np.float64).reshape(-1, 2)
-            u = np.round(uv[:, 0]).astype(np.int64)
-            v = np.round(uv[:, 1]).astype(np.int64)
-            inside = (u >= 0) & (u < w) & (v >= 0) & (v < h)
-            n_inside += int(inside.sum())
-
             xyz = (R_wc @ p_cam.T).T + o_wc
             rec = np.empty(p_cam.shape[0], dt)
             rec["x"], rec["y"], rec["z"] = xyz[:, 0], xyz[:, 1], xyz[:, 2]
             rec["intensity"] = 0.0
             rec["rgb"] = 0
             fc.write(rec.tobytes())
-
-            if fe is not None:
-                rgb = np.zeros((u.size, 3), np.int64)
-                if inside.any():
-                    rgb[inside] = img[v[inside], u[inside]][:, ::-1]   # BGR -> RGB
-                lines = []
-                for k in range(u.size):
-                    lines.append("{};{:.6f};{:.6f};{:.6f};{:.3f};{:.3f};{};{};{};{}\n".format(
-                        written + k, xyz[k, 0], xyz[k, 1], xyz[k, 2],
-                        uv[k, 0], uv[k, 1], int(inside[k]),
-                        rgb[k, 0], rgb[k, 1], rgb[k, 2]))
-                fe.write("".join(lines))
             written += p_cam.shape[0]
-
-    if fe is not None:
-        fe.close()
-        print("[expected] {} строк -> {}".format(written, exp_path))
     print("[cloud] {} точек -> {}".format(written, out_path))
 
     vis_area = (args.distance * w / cam["K"][0, 0]) * (args.distance * h / cam["K"][1, 1])
     print("[plane] {:.2f} x {:.2f} м, шаг сетки {:.4f} м, сетка {}x{}".format(
         2 * hx, 2 * hy, step, nx, ny))
-    print("[stats] точек {}  внутри кадра {}  (оценка площади кадра {:.1f} м²: ~{:.0f} точек)".format(
-        written, n_inside, vis_area, vis_area * args.ppm))
+    print("[stats] точек {}  (в кадре ожидается ~{:.0f} при площади кадра {:.1f} м²)".format(
+        written, vis_area * args.ppm, vis_area))
     if args.margin < 1.0:
         print("[WARN] --margin {} < 1.0: края кадра не покрыты точками".format(args.margin))
     if args.distance <= 2.0:
