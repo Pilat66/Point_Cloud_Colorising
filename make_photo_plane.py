@@ -13,6 +13,9 @@
     (colorise_offline C++ и Python, ColoriseMap, будущие оптимизированные
     версии); результаты сравниваются между собой и с эталоном.
 
+    Точки считаются порциями (--chunk, по умолчанию 1000 штук) и сразу
+    пишутся в файлы, поэтому память не зависит от размера фикстуры.
+
     Время снимка берётся из имени файла (эпоха в нс/мс/с), поза камеры — из
     траектории и калибровки, той же цепочкой, что и в colorise_offline.
 
@@ -59,6 +62,8 @@ def parse_args(argv=None):
     ap.add_argument("--expected-csv", default="",
                     help="куда писать эталон [<облако без .pcd>-expected.csv]")
     ap.add_argument("--no-expected", action="store_true", help="не писать эталонный CSV")
+    ap.add_argument("--chunk", type=int, default=1000,
+                    help="сколько точек считать и писать за один заход [1000]")
     ap.add_argument("--time-tolerance", type=float, default=1.0,
                     help="с; допуск выхода времени снимка за траекторию [1.0]")
     ap.add_argument("--time-shift", type=float, default=0.0,
@@ -69,6 +74,13 @@ def parse_args(argv=None):
     ap.add_argument("--euler-order", default="xyz", choices=["xyz", "zyx"])
     ap.add_argument("--euler-units", default="auto", choices=["auto", "deg", "rad"])
     return ap.parse_args(argv)
+
+
+def pcd_header(n):
+    """Заголовок бинарного PCD — тот же, что пишет colorise_offline.save_cloud_pcd."""
+    return ("# .PCD v0.7 - Point Cloud Data file format\nVERSION 0.7\n"
+            "FIELDS x y z intensity rgb\nSIZE 4 4 4 4 4\nTYPE F F F F U\n"
+            "COUNT 1 1 1 1 1\nWIDTH %d\nHEIGHT 1\nPOINTS %d\nDATA binary\n" % (n, n))
 
 
 def image_corner_rays(cam):
@@ -160,54 +172,79 @@ def main(argv=None):
     ny = max(2, int(round(2.0 * hy / step)) + 1)
     xs = cx + (np.arange(nx) - 0.5 * (nx - 1)) * step
     ys = cy + (np.arange(ny) - 0.5 * (ny - 1)) * step
-    gx, gy = np.meshgrid(xs, ys)
-    p_cam = np.stack([gx.ravel(), gy.ravel(), np.full(gx.size, args.distance)], axis=1)
-
-    rvec = np.zeros((3, 1), np.float64)
-    tvec = np.zeros((3, 1), np.float64)
-    if cam["model"] == "fisheye":
-        res = cv2.fisheye.projectPoints(p_cam.reshape(-1, 1, 3), rvec, tvec,
-                                        cam["K"], cam["dist"])
-    else:
-        res = cv2.projectPoints(p_cam.reshape(-1, 1, 3), rvec, tvec,
-                                cam["K"], cam["dist"])
-    uv = np.asarray(res[0] if isinstance(res, tuple) else res, np.float64).reshape(-1, 2)
-    u = np.round(uv[:, 0]).astype(np.int64)
-    v = np.round(uv[:, 1]).astype(np.int64)
     w, h = cam["width"], cam["height"]
-    inside = (u >= 0) & (u < w) & (v >= 0) & (v < h)
-
-    xyz = (T_world_cam[:3, :3] @ p_cam.T).T + T_world_cam[:3, 3]
-
     img = cv2.imread(args.photo, cv2.IMREAD_COLOR)
     if img is None:
         raise SystemExit("не удалось прочитать изображение: " + args.photo)
-    rgb = np.zeros((u.size, 3), np.int64)
-    if inside.any():
-        rgb[inside] = img[v[inside], u[inside]][:, ::-1]      # BGR -> RGB
 
     base = "{}-plane-{:g}m-{:g}ppm".format(stem, args.distance, args.ppm)
     out_path = args.output or (base + ".pcd")
     exp_path = args.expected_csv or (os.path.splitext(out_path)[0] + "-expected.csv")
 
-    co.save_cloud_pcd(out_path, xyz, np.zeros(xyz.shape[0], np.uint32),
-                      np.zeros(xyz.shape[0], np.float32))
-    print("[cloud] {} точек -> {}".format(xyz.shape[0], out_path))
+    # Потоковая генерация: точки считаются порциями по ~--chunk штук и сразу
+    # пишутся в файлы, поэтому память не зависит от размера фикстуры.
+    n_total = nx * ny
+    rows_per_chunk = max(1, int(args.chunk) // nx)
+    rvec = np.zeros((3, 1), np.float64)
+    tvec = np.zeros((3, 1), np.float64)
+    R_wc, o_wc = T_world_cam[:3, :3], T_world_cam[:3, 3]
+    dt = np.dtype([("x", "<f4"), ("y", "<f4"), ("z", "<f4"),
+                   ("intensity", "<f4"), ("rgb", "<u4")])
+    n_inside = 0
+    written = 0
+    fe = None if args.no_expected else open(exp_path, "w")
+    if fe is not None:
+        fe.write("index;x;y;z;u;v;inside;R;G;B\n")
+    with open(out_path, "wb") as fc:
+        fc.write(pcd_header(n_total).encode("ascii"))
+        for r0 in range(0, ny, rows_per_chunk):
+            yy = ys[r0:r0 + rows_per_chunk]
+            gx, gy = np.meshgrid(xs, yy)
+            p_cam = np.stack([gx.ravel(), gy.ravel(),
+                              np.full(gx.size, args.distance)], axis=1)
+            if cam["model"] == "fisheye":
+                res = cv2.fisheye.projectPoints(p_cam.reshape(-1, 1, 3), rvec, tvec,
+                                                cam["K"], cam["dist"])
+            else:
+                res = cv2.projectPoints(p_cam.reshape(-1, 1, 3), rvec, tvec,
+                                        cam["K"], cam["dist"])
+            uv = np.asarray(res[0] if isinstance(res, tuple) else res,
+                            np.float64).reshape(-1, 2)
+            u = np.round(uv[:, 0]).astype(np.int64)
+            v = np.round(uv[:, 1]).astype(np.int64)
+            inside = (u >= 0) & (u < w) & (v >= 0) & (v < h)
+            n_inside += int(inside.sum())
 
-    if not args.no_expected:
-        with open(exp_path, "w") as f:
-            f.write("index;x;y;z;u;v;inside;R;G;B\n")
-            for i in range(u.size):
-                f.write("{};{:.6f};{:.6f};{:.6f};{:.3f};{:.3f};{};{};{};{}\n".format(
-                    i, xyz[i, 0], xyz[i, 1], xyz[i, 2], uv[i, 0], uv[i, 1],
-                    int(inside[i]), rgb[i, 0], rgb[i, 1], rgb[i, 2]))
-        print("[expected] {} строк -> {}".format(u.size, exp_path))
+            xyz = (R_wc @ p_cam.T).T + o_wc
+            rec = np.empty(p_cam.shape[0], dt)
+            rec["x"], rec["y"], rec["z"] = xyz[:, 0], xyz[:, 1], xyz[:, 2]
+            rec["intensity"] = 0.0
+            rec["rgb"] = 0
+            fc.write(rec.tobytes())
+
+            if fe is not None:
+                rgb = np.zeros((u.size, 3), np.int64)
+                if inside.any():
+                    rgb[inside] = img[v[inside], u[inside]][:, ::-1]   # BGR -> RGB
+                lines = []
+                for k in range(u.size):
+                    lines.append("{};{:.6f};{:.6f};{:.6f};{:.3f};{:.3f};{};{};{};{}\n".format(
+                        written + k, xyz[k, 0], xyz[k, 1], xyz[k, 2],
+                        uv[k, 0], uv[k, 1], int(inside[k]),
+                        rgb[k, 0], rgb[k, 1], rgb[k, 2]))
+                fe.write("".join(lines))
+            written += p_cam.shape[0]
+
+    if fe is not None:
+        fe.close()
+        print("[expected] {} строк -> {}".format(written, exp_path))
+    print("[cloud] {} точек -> {}".format(written, out_path))
 
     vis_area = (args.distance * w / cam["K"][0, 0]) * (args.distance * h / cam["K"][1, 1])
     print("[plane] {:.2f} x {:.2f} м, шаг сетки {:.4f} м, сетка {}x{}".format(
         2 * hx, 2 * hy, step, nx, ny))
     print("[stats] точек {}  внутри кадра {}  (оценка площади кадра {:.1f} м²: ~{:.0f} точек)".format(
-        xyz.shape[0], int(inside.sum()), vis_area, vis_area * args.ppm))
+        written, n_inside, vis_area, vis_area * args.ppm))
     if args.margin < 1.0:
         print("[WARN] --margin {} < 1.0: края кадра не покрыты точками".format(args.margin))
     if args.distance <= 2.0:
