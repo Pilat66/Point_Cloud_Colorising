@@ -16,7 +16,6 @@ set(CMAKE_CXX_FLAGS_DEBUG "-g3 -Wall -Wextra -Wuninitialized")
 
 find_package(Eigen3 REQUIRED)
 find_package(OpenCV 4 REQUIRED)
-find_package(yaml-cpp REQUIRED)
 find_package(Threads REQUIRED)
 
 include_directories(
@@ -32,4 +31,4 @@ add_executable(colorise_offline
     src/trajectory.cpp
     src/project.cpp
 )
-target_link_libraries(colorise_offline ${OpenCV_LIBS} yaml-cpp Threads::Threads)
+target_link_libraries(colorise_offline ${OpenCV_LIBS} Threads::Threads)

@@ -24,13 +24,13 @@
 
 Использование
     python3 make_photo_plane.py data/1788882799423559018.png \
-        --trajectory data/trajectory.csv --camera data/camera.yaml \
-        --calib data/calib.json --distance 5 --ppm 100
+        --trajectory data/trajectory.csv \
+        --calib data/calib-pinhole-2026-09-16.json --distance 5 --ppm 100
 
 Результат
     <имя фото>-plane-<d>m-<ppm>ppm.pcd   облако (x y z intensity rgb)
 
-Зависимости: numpy, opencv-python, pyyaml; загрузчики переиспользуются из
+Зависимости: numpy, opencv-python; загрузчики переиспользуются из
 colorise_offline.py (импорт безопасен — там всё под if __name__).
 """
 
@@ -52,8 +52,8 @@ def parse_args(argv=None):
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("photo", help="файл снимка; время съёмки — в его имени (эпоха)")
     ap.add_argument("--trajectory", default="trajectory.csv", help="CSV с позами лидара")
-    ap.add_argument("--camera", default="camera.yaml", help="интринсики камеры")
-    ap.add_argument("--calib", default="calib.json", help="экстраинсики камера<->лидар")
+    ap.add_argument("--calib", default="calib.json",
+                    help="интринсики камеры (блок \"camera\") + экстраинсик камера<->лидар")
     ap.add_argument("--distance", type=float, required=True,
                     help="расстояние от камеры до плоскости, м (по оптической оси)")
     ap.add_argument("--ppm", type=float, required=True, help="точек на квадратный метр")
@@ -164,15 +164,15 @@ def main(argv=None):
     if t_photo is None:
         raise SystemExit("в имени файла нет времени (эпоха в нс/мс/с): " + args.photo)
 
-    cam = co.load_camera(args.camera)
+    cam, cam_key = co.load_camera_from_calib(args.calib)
     T_cam_lidar, calib_key, calib_dir = co.load_calib(
         args.calib, args.extrinsic_name, args.extrinsic_direction)
     traj = co.load_trajectory(args.trajectory, args.euler_order, args.euler_units,
                               args.time_shift)
 
     print("[photo] {}  t={:.6f}".format(os.path.basename(args.photo), t_photo))
-    print("[camera] {} {}x{} fx={:.3f} fy={:.3f} cx={:.3f} cy={:.3f} dist={}".format(
-        cam["model"], cam["width"], cam["height"],
+    print("[camera] {} {}x{} (calib: {}) fx={:.3f} fy={:.3f} cx={:.3f} cy={:.3f} dist={}".format(
+        cam["model"], cam["width"], cam["height"], cam_key,
         cam["K"][0, 0], cam["K"][1, 1], cam["K"][0, 2], cam["K"][1, 2],
         np.round(cam["dist"], 6).tolist()))
     print("[extrinsic] {} ({})".format(calib_key, calib_dir))

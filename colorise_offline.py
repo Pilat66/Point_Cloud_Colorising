@@ -13,10 +13,6 @@ try:
     import laspy
 except Exception:
     laspy = None
-try:
-    import yaml
-except Exception:
-    yaml = None
 
 def quat_normalize(q):
     n = math.sqrt(sum(v*v for v in q))
@@ -112,22 +108,68 @@ def load_trajectory(path,euler_order="xyz",euler_units="auto",time_shift=0.0):
     o=np.argsort(np.asarray(times))
     return Trajectory(np.asarray(times)[o],np.asarray(pos)[o],np.asarray(quats)[o],header or [])
 
-def load_camera(path):
-    text=open(path).read()
-    if text.lstrip().startswith("%YAML:"): text="\n".join(l for l in text.splitlines() if not l.startswith("%"))
-    raw=(yaml or __import__("yaml")).safe_load(text) or {}
-    model=str(raw.get("cam_model",raw.get("camera_model","PinholeCamera"))).lower()
-    fisheye=("fish" in model or "equidistant" in model or raw.get("distortion_model")=="equidistant")
-    cam={"model":"fisheye" if fisheye else "pinhole",
-         "width":int(raw.get("cam_width",raw.get("width",1600))),
-         "height":int(raw.get("cam_height",raw.get("height",1300)))}
-    cam["K"]=np.array([[float(raw.get("cam_fx") or raw.get("fx")) or 0,0,float(raw.get("cam_cx") or raw.get("cx")) or 0],
-                        [0,float(raw.get("cam_fy") or raw.get("fy")) or 0,float(raw.get("cam_cy") or raw.get("cy")) or 0],
-                        [0,0,1.0]])
-    dists=[float(raw[k]) for k in ("cam_d0","cam_d1","cam_d2","cam_d3","cam_d4","cam_d5") if raw.get(k) is not None]
-    if "distortion_coeffs" in raw: dists=[float(x) for x in raw["distortion_coeffs"]]
-    cam["dist"]=np.array(dists,np.float64)
-    return cam
+def _object_blocks(data):
+    out=[]
+    def walk(node,prefix):
+        if isinstance(node,dict):
+            p=prefix.rstrip(".")
+            if p: out.append((p,node))
+            for k,v in node.items(): walk(v,prefix+str(k)+".")
+    walk(data,"")
+    return out
+def _cam_rank(path):
+    last=str(path).split(".")[-1].lower()
+    if last=="camera": return 3
+    if last.startswith("camera"): return 2
+    if last.startswith("cam"): return 1
+    return 0
+def _has_intrinsics(b):
+    return isinstance(b,dict) and any(k in b for k in ("intrinsics","K","camera_matrix","fx","cam_fx"))
+def _num_by_keys(obj,keys):
+    for k in keys:
+        v=obj.get(k)
+        if isinstance(v,(int,float)) and not isinstance(v,bool): return float(v)
+    return None
+def load_camera_from_calib(path):
+    """Camera params from the "camera" block of calib.json (the same file as the
+    extrinsic): model, width/height, intrinsics and distortion coefficients.
+    Returns (cam, key_used); key_used is the dotted path of the block read."""
+    data=json.load(open(path))
+    cand=[(p,b) for p,b in _object_blocks(data) if _has_intrinsics(b)]
+    if not cand:
+        raise ValueError("no camera intrinsics block in {} (expected {{\"camera\": {{\"width\": .., "
+                         "\"height\": .., \"intrinsics\": [fx,fy,cx,cy], \"distortion_coeffs\": [..]}}}}, "
+                         "see data/calib-pinhole-2026-09-16.json)".format(path))
+    key,blk=sorted(cand,key=lambda x:(-_cam_rank(x[0]),x[0]))[0]
+    model=str(blk.get("camera_model",blk.get("model",blk.get("distortion_model",
+              blk.get("cam_model","PinholeCamera"))))).lower()
+    cam={"model":"fisheye" if ("fish" in model or "equidistant" in model) else "pinhole"}
+    w=_num_by_keys(blk,("width","image_width","cam_width"))
+    h=_num_by_keys(blk,("height","image_height","cam_height"))
+    if w is None or h is None:
+        raise ValueError("camera block '{}' in {} has no image size: add \"width\" and \"height\" "
+                         "(see data/calib-pinhole-2026-09-16.json)".format(key,path))
+    cam["width"],cam["height"]=int(w),int(h)
+    if "intrinsics" in blk:
+        v=np.asarray(blk["intrinsics"],float).ravel()
+        if v.size<4: raise ValueError("camera block '{}' in {}: 'intrinsics' must be [fx,fy,cx,cy]".format(key,path))
+        cam["K"]=np.array([[v[0],0.0,v[2]],[0.0,v[1],v[3]],[0.0,0.0,1.0]])
+    elif "K" in blk or "camera_matrix" in blk:
+        v=np.asarray(blk["K"] if "K" in blk else blk["camera_matrix"],float).ravel()
+        if v.size!=9: raise ValueError("camera block '{}' in {}: 'K' must be a 3x3 matrix".format(key,path))
+        cam["K"]=v.reshape(3,3)
+    else:
+        fx,fy,cx,cy=(_num_by_keys(blk,ks) for ks in (("fx","cam_fx"),("fy","cam_fy"),("cx","cam_cx"),("cy","cam_cy")))
+        if None in (fx,fy,cx,cy):
+            raise ValueError("camera block '{}' in {}: no intrinsics "
+                             "(expected \"intrinsics\": [fx,fy,cx,cy])".format(key,path))
+        cam["K"]=np.array([[fx,0.0,cx],[0.0,fy,cy],[0.0,0.0,1.0]])
+    if "distortion_coeffs" in blk: dists=blk["distortion_coeffs"]
+    elif "dist_coeffs" in blk: dists=blk["dist_coeffs"]
+    elif "D" in blk: dists=blk["D"]
+    else: dists=[blk[k] for k in ("cam_d0","cam_d1","cam_d2","cam_d3","cam_d4","cam_d5") if blk.get(k) is not None]
+    cam["dist"]=np.asarray(dists,float).ravel().astype(np.float64)
+    return cam,key
 
 def _norm7(v):
     x,y,z,qx,qy,qz,qw=[float(x) for x in v]
@@ -262,8 +304,8 @@ def project_and_sample(P,idx,img,K,dist,model,cam_w,cam_h,T_cam_from_pts,edge_ma
     px=img[v,u]; return pack_rgb(px[:,2],px[:,1],px[:,0]),ii
 
 def colourise(args):
-    cam=load_camera(args.camera)
-    print("[camera] {} {}x{} K={} dist={}".format(cam['model'],cam['width'],cam['height'],np.round(cam['K'],3).tolist(),np.round(cam['dist'],5).tolist()))
+    cam,cam_key=load_camera_from_calib(args.calib)
+    print("[camera] {} {}x{} (calib: {}) K={} dist={}".format(cam['model'],cam['width'],cam['height'],cam_key,np.round(cam['K'],3).tolist(),np.round(cam['dist'],5).tolist()))
     T,key,direction=load_calib(args.calib,args.extrinsic_name,args.extrinsic_direction)
     print("[extrinsic] {} ({})\n{}".format(key,direction,np.round(T,4)))
     tr=load_trajectory(args.trajectory,args.euler_order,args.euler_units,args.time_shift)
@@ -347,8 +389,8 @@ def main(argv=None):
     ap.add_argument("--cloud",default="data/all_raw_points.pcd")
     ap.add_argument("--photos",default="data")
     ap.add_argument("--trajectory",default="data/trajectory.csv")
-    ap.add_argument("--camera",default="data/camera.yaml")
-    ap.add_argument("--calib",default="data/calib.json")
+    ap.add_argument("--calib",default="data/calib.json",
+                    help="camera intrinsics (\"camera\" block) + camera<->lidar extrinsic")
     ap.add_argument("--output",default="coloured.pcd")
     ap.add_argument("--preview",default="")
     ap.add_argument("--extrinsic-name",default=None)

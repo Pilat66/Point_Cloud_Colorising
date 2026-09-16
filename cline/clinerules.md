@@ -86,9 +86,9 @@ cmake -S colorise -B colorise/build -DCMAKE_BUILD_TYPE=Release
 cmake --build colorise/build -j4
 ```
 
-C++17, Release (`-O3`) по умолчанию. Зависимости: Eigen3, OpenCV 4, yaml-cpp,
+C++17, Release (`-O3`) по умолчанию. Зависимости: Eigen3, OpenCV 4,
 Threads; `nlohmann/json` — vendored в `colorise/third_party/`. На этой машине
-проверены OpenCV 4.6.0, yaml-cpp 0.8.0, Eigen 3.4.0. Артефакт —
+проверены OpenCV 4.6.0, Eigen 3.4.0. Артефакт —
 `colorise/build/colorise_offline` (каталог `build/` не в git).
 
 ### 2.3 Python
@@ -99,7 +99,7 @@ python3 colorise_offline.py --output coloured.pcd
 python3 align_brightness.py data/1 --stat top25
 ```
 
-Проверено на Python 3.12.3, numpy 2.5.3, opencv-python 5.0.0.93, PyYAML 6.0.3,
+Проверено на Python 3.12.3, numpy 2.5.3, opencv-python 5.0.0.93,
 scipy 1.18.1, laspy 2.7.0; список зависимостей — `requirements.txt`. `scipy`
 нужен только для радиусного кадрирования (`--max-range`), `laspy` — только для
 `.las`.
@@ -108,18 +108,19 @@ scipy 1.18.1, laspy 2.7.0; список зависимостей — `requiremen
 
 ## 3. Валидация изменений
 
-Минимальный smoke-прогон (облако `1788882799423559018.pcd`, ~24 МБ, данные —
-`data/`), обе реализации с одними флагами:
+Минимальный smoke-прогон (облако `data/1789476925898092722.las`, 21 МБ, кадр
+`data/img-1789476925898092722/`, ~13 с на Python-прогон), обе реализации с
+одними флагами:
 
 ```bash
 venv/bin/python colorise_offline.py \
-    --cloud 1788882799423559018.pcd --photos data \
-    --trajectory data/trajectory.csv --camera data/camera.yaml \
+    --cloud data/1789476925898092722.las --photos data/img-1789476925898092722 \
+    --trajectory data/trajectory.csv \
     --calib data/calib.json --output /tmp/coloured_py.pcd
 
 ./colorise/build/colorise_offline \
-    --cloud 1788882799423559018.pcd --photos data \
-    --trajectory data/trajectory.csv --camera data/camera.yaml \
+    --cloud data/1789476925898092722.las --photos data/img-1789476925898092722 \
+    --trajectory data/trajectory.csv \
     --calib data/calib.json --output /tmp/coloured_cpp.pcd
 ```
 
@@ -144,7 +145,9 @@ cmp /tmp/coloured_py.pcd /tmp/coloured_cpp.pcd   # ожидается полно
 но и не удаляются самовольно:
 
 - `data/` — тестовый набор (~1.2 ГБ): `all_raw_points.pcd`/`.las`,
-  `trajectory.csv`, `camera.yaml`, `calib.json`, каталоги фото `1/`, `img-all/`.
+  `trajectory.csv`, `calib.json` (интринсики в блоке `camera` + экстраинсик;
+  образец формата — `calib-pinhole-2026-09-16.json`), каталоги фото `img-*/`.
+  `camera.yaml` — старый формат, больше не читается ни одним инструментом.
   Это источник данных для прогонов, а не источник истины о коде; читать только
   при необходимости.
 - `2026-09-08-18-56-45/` — запись прогона: mcap, датасет, результаты раскраски.

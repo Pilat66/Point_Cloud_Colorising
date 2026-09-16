@@ -23,7 +23,6 @@ set(SHARED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../colorise")
 
 find_package(Eigen3 REQUIRED)
 find_package(OpenCV 4 REQUIRED)
-find_package(yaml-cpp REQUIRED)
 find_package(Threads REQUIRED)
 
 include_directories(
@@ -40,4 +39,4 @@ add_executable(colorise_map
     ${SHARED_DIR}/src/trajectory.cpp
     ${SHARED_DIR}/src/project.cpp
 )
-target_link_libraries(colorise_map ${OpenCV_LIBS} yaml-cpp Threads::Threads)
+target_link_libraries(colorise_map ${OpenCV_LIBS} Threads::Threads)

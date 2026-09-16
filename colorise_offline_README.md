@@ -12,7 +12,7 @@
 ## 1. Зависимости
 
 ```bash
-pip install numpy opencv-python pyyaml
+pip install numpy opencv-python
 ```
 
 Опционально:
@@ -35,7 +35,6 @@ python3 colorise_offline.py \
     --cloud data/all_raw_points.pcd \
     --photos data \
     --trajectory data/trajectory.csv \
-    --camera data/camera.yaml \
     --calib data/calib.json \
     --output coloured.pcd
 ```
@@ -53,8 +52,7 @@ python3 colorise_offline.py \
 | `--cloud` | `data/all_raw_points.pcd` | облако точек, `.pcd` или `.las` |
 | `--photos` | `data` | каталог со снимками, время в имени файла |
 | `--trajectory` | `data/trajectory.csv` | позы лидара |
-| `--camera` | `data/camera.yaml` | интринсики камеры |
-| `--calib` | `data/calib.json` | экстраинсики камера↔лидар |
+| `--calib` | `data/calib.json` | интринсики камеры (блок `camera`) + экстраинсики камера↔лидар |
 | `--output` | `coloured.pcd` | выходной PCD |
 
 ### 3.1 Фотографии
@@ -93,27 +91,41 @@ time,x,y,z,qx,qy,qz,qw
 Поза лидара интерполируется на момент времени снимка (линейно по позиции,
 SLERP по кватерниону). Снимок вне временного диапазона траектории пропускается.
 
-### 3.3 Камера (`camera.yaml`)
+### 3.3 Камера (блок `camera` в `calib.json`)
 
-```yaml
-cam_model: PinholeCamera      # или FisheyeCamera / camera_model
-cam_width: 1600
-cam_height: 1300
-cam_fx: 922.459146
-cam_fy: 922.7803404
-cam_cx: 797.0834849
-cam_cy: 626.8043673
-cam_d0: 0.04070139073         # k1
-cam_d1: 0.03099759412         # k2
-cam_d2: -0.008212424786       # p1
-cam_d3: 0.002776078604        # p2
-cam_d4: -0.1332834779         # k3
+Интринсики, дисторсия и **размер кадра** берутся из блока `camera` того же
+файла `--calib`, что и экстраинсик — отдельный `camera.yaml` не читается:
+
+```json
+{
+  "camera": {
+    "camera_model": "plumb_bob",
+    "width": 1600,
+    "height": 1300,
+    "intrinsics": [922.459146, 922.7803404, 797.0834849, 626.8043673],
+    "distortion_coeffs": [0.04070139073, 0.03099759412, -0.008212424786,
+                          0.002776078604, -0.1332834779]
+  },
+  "results": { "T_lidar_camera": [x, y, z, qx, qy, qz, qw] }
+}
 ```
 
-Поддерживается и блок `distortion_coeffs`. Если в названии модели есть
-`fish`/`equidistant` — используется проекция рыбьего глаза `cv2.fisheye`, иначе
-стандартная `cv2.projectPoints` (пинхол/plumb_bob). Число коэффициентов — 4, 5
-или 8.
+Распознаваемые ключи блока (первый найденный выигрывает):
+
+| Что | Ключи |
+|---|---|
+| Модель | `camera_model` / `model` / `distortion_model` / `cam_model` |
+| Размер кадра | `width`/`height` (**обязательны**), также `image_width`/`image_height`, `cam_width`/`cam_height` |
+| Интринсики | `intrinsics`: `[fx,fy,cx,cy]`; либо `K`/`camera_matrix` (3×3); либо `fx/fy/cx/cy` (или `cam_fx..cam_cy`) |
+| Дисторсия | `distortion_coeffs`, `dist_coeffs`, `D` (любая длина) или `cam_d0..cam_d5` |
+
+Если в названии модели есть `fish`/`equidistant` — используется проекция
+рыбьего глаза `cv2.fisheye`, иначе стандартная `cv2.projectPoints`
+(пинхол/plumb_bob). Число коэффициентов дисторсии — 4, 5 или 8.
+
+Образец формата — `data/calib-pinhole-2026-09-16.json`. Без блока `camera` или
+без `width`/`height` скрипт останавливается с ошибкой, где перечислены
+ожидаемые ключи.
 
 ### 3.4 Экстраинсики (`calib.json`) — направление преобразования
 

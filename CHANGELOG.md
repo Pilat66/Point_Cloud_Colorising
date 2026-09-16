@@ -76,3 +76,42 @@
   «виртуальной фотографии». Рамка строится по пиксельной границе кадра, поэтому её
   проекция совпадает с границей с ошибкой < 0.01 px; первые `nx*ny` точек облака
   не изменились.
+
+### 2026-09-16
+
+- Параметры камеры читаются только из `--calib` (итерация ITER-20260916-165057):
+  флаг `--camera` и файл `camera.yaml` больше не используются. Интринсики,
+  дисторсия и **размер кадра** берутся из блока `camera` того же `calib.json`, что
+  и экстраинсик (`results.T_lidar_camera`). Формат:
+  `camera_model`, `width`, `height` (обязательны), `intrinsics` `[fx,fy,cx,cy]`,
+  `distortion_coeffs`; образец — `data/calib-pinhole-2026-09-16.json`, а в
+  `data/calib.json` добавлены `camera.width = 1600` и `camera.height = 1300`
+  (данные, в git не входят — каталог `data/` в `.gitignore`). Дополнительно
+  принимаются алиасы: модель `model`/`distortion_model`/`cam_model`
+  (`plumb_bob`/`radtan`/`pinhole` → pinhole, `fisheye`/`equidistant` → fisheye),
+  размер `image_width`/`image_height`/`cam_width`/`cam_height`, интринсики
+  `K`/`camera_matrix` (3×3) или `fx/fy/cx/cy`, дисторсия
+  `dist_coeffs`/`D`/`cam_d0..d5`. Нет блока `camera` или нет `width`/`height` —
+  явная ошибка с подсказкой (молчаливых 1600×1300 по умолчанию больше нет).
+- Все три реализации синхронизированы (паритет C++ ↔ Python сохранён):
+  `colorise/` — `loadCamera()` заменён на `loadCameraFromCalib()`, YAML-слой удалён,
+  `Options::camera_path` и флаг `--camera` убраны; `ColoriseMap/` — группа камеры
+  стала парой `--photos <dir> --calib <json> [--name]`; `colorise_offline.py` —
+  `load_camera()` заменён на `load_camera_from_calib()`, `--camera` убран, мёртвый
+  `import yaml` удалён; `make_photo_plane.py` — камера из `--calib`. В строку
+  `[camera]` добавлен источник: `(calib: <ключ>)`.
+- Зависимости: `yaml-cpp` убран из `colorise/CMakeLists.txt` и
+  `ColoriseMap/CMakeLists.txt` (единственным потребителем был загрузчик
+  `camera.yaml`), `pyyaml` убран из `requirements.txt`.
+- Документация: `colorise/README.md` (§1, §3, §4, §4.3, §8),
+  `ColoriseMap/README.md` (§1, §3, §4, §8, §9), `colorise_offline_README.md`
+  (§1, §2, §3, §3.3), корневой `README.md` (таблица аргументов),
+  `cline/clinerules.md` (§2.2, §2.3, §3 smoke-прогон, §4 состав `data/`).
+- Проверено на `data/1789476925898092722.las` + `data/img-1789476925898092722/`:
+  прогон до перехода (с `--camera data/camera.yaml`) и после (без `--camera`) дают
+  **побайтово одинаковый** PCD — `md5 9b03201e…`, `total=618 335`,
+  `coloured=618 290` — в Python, `colorise_offline` и `colorise_map`;
+  C++ ↔ Python и `--jobs 1` ↔ авто совпадают; прогон с
+  `data/calib-pinhole-2026-09-16.json` — паритет C++ ↔ Python; негативные кейсы
+  (старый `--camera`, калибровка без блока `camera`, блок без `width`/`height`) —
+  exit 1 с внятным текстом.

@@ -151,7 +151,7 @@ projected at once.
 
 `colorise_offline.py` reproduces the Map-mode projection pipeline (
 `projectAndSample` from `src/colorise.cpp`) as a standalone script. It needs only
-Python + `numpy` + `opencv-python` + `pyyaml` (+ `scipy` for the radius cull,
+Python + `numpy` + `opencv-python` (+ `scipy` for the radius cull,
 + `laspy` only for `.las` input). No ROS, no catkin build.
 
 It reads exactly the artefacts this repo keeps in `./data`:
@@ -161,13 +161,12 @@ It reads exactly the artefacts this repo keeps in `./data`:
 | `--cloud` | `data/all_raw_points.pcd` | PCD (`x y z [nx ny nz] intensity [curvature …]`), any field set |
 | `--photos` | `data` | dir of images, capture time in the **filename** (epoch ns, e.g. `1788882722018994333.png`) |
 | `--trajectory` | `data/trajectory.csv` | lidar poses `time;x;y;z;roll;pitch;yaw` (Euler) or `time,x,y,z,qx,qy,qz,qw` |
-| `--camera` | `data/camera.yaml` | pinhole intrinsics `cam_fx,..cam_cy` + distortion `cam_d0..d4` |
-| `--calib` | `data/calib.json` | camera↔lidar extrinsic (see convention note below) |
+| `--calib` | `data/calib.json` | camera intrinsics (its `camera` block: `width`/`height`, `intrinsics`, `distortion_coeffs`) + camera↔lidar extrinsic (see convention note below) |
 | `--output` | `coloured.pcd` | coloured cloud written as `x y z intensity rgb` PCD |
 
 ```bash
 python3 colorise_offline.py --cloud data/all_raw_points.pcd --photos data \
-    --trajectory data/trajectory.csv --camera data/camera.yaml \
+    --trajectory data/trajectory.csv \
     --calib data/calib.json --output coloured.pcd
 ```
 

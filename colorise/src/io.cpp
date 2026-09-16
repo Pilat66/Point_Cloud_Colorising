@@ -1,6 +1,7 @@
 #include "colorise.h"
 #include "parallel.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -8,32 +9,15 @@
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 
 #include <nlohmann/json.hpp>
-#include <yaml-cpp/yaml.h>
 
 namespace fs = std::filesystem;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// YAML helpers
-// ─────────────────────────────────────────────────────────────────────────────
-static YAML::Node loadYamlLenient(const std::string& path) {
-    std::ifstream f(path);
-    if (!f.is_open()) throw std::runtime_error("cannot open YAML file: " + path);
-    // Kalibr writes "%YAML:1.0", which yaml-cpp rejects as a directive; drop
-    // any line starting with '%' (same as the Python and ROS loaders).
-    std::stringstream ss;
-    std::string line;
-    while (std::getline(f, line)) {
-        if (!line.empty() && line[0] == '%') continue;
-        ss << line << '\n';
-    }
-    return YAML::Load(ss.str());
-}
 
 static std::string lowerStr(std::string s) {
     std::transform(s.begin(), s.end(), s.begin(),
@@ -41,71 +25,8 @@ static std::string lowerStr(std::string s) {
     return s;
 }
 
-static bool definedScalar(const YAML::Node& n, const std::string& key) {
-    return n[key] && n[key].IsScalar();
-}
-
-// Python: float(raw.get(k1) or raw.get(k2)) or 0  — first non-empty wins.
-static double yDouble2(const YAML::Node& n, const std::string& k1,
-                       const std::string& k2) {
-    if (definedScalar(n, k1)) {
-        const double v = n[k1].as<double>();
-        if (v != 0.0) return v;
-    }
-    if (definedScalar(n, k2)) {
-        const double v = n[k2].as<double>();
-        if (v != 0.0) return v;
-    }
-    return 0.0;
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
-// Camera (camera.yaml)
-// ─────────────────────────────────────────────────────────────────────────────
-void loadCamera(const std::string& path, CameraParams& cam) {
-    const YAML::Node raw = loadYamlLenient(path);
-
-    std::string model = "PinholeCamera";
-    if (definedScalar(raw, "cam_model")) model = raw["cam_model"].as<std::string>();
-    else if (definedScalar(raw, "camera_model")) model = raw["camera_model"].as<std::string>();
-
-    const std::string lm = lowerStr(model);
-    bool fisheye = lm.find("fish") != std::string::npos ||
-                   lm.find("equidistant") != std::string::npos;
-    if (definedScalar(raw, "distortion_model") &&
-        lowerStr(raw["distortion_model"].as<std::string>()) == "equidistant")
-        fisheye = true;
-    cam.model = fisheye ? "fisheye" : "pinhole";
-
-    auto yInt = [&](const std::string& k1, const std::string& k2, int fallback) -> int {
-        if (definedScalar(raw, k1)) return static_cast<int>(raw[k1].as<double>());
-        if (definedScalar(raw, k2)) return static_cast<int>(raw[k2].as<double>());
-        return fallback;
-    };
-    cam.width  = yInt("cam_width", "width", 1600);
-    cam.height = yInt("cam_height", "height", 1300);
-
-    const double fx = yDouble2(raw, "cam_fx", "fx");
-    const double fy = yDouble2(raw, "cam_fy", "fy");
-    const double cx = yDouble2(raw, "cam_cx", "cx");
-    const double cy = yDouble2(raw, "cam_cy", "cy");
-    cam.K << fx, 0.0, cx,
-             0.0, fy, cy,
-             0.0, 0.0, 1.0;
-
-    cam.dist.clear();
-    for (int d = 0; d <= 5; ++d) {
-        const std::string key = "cam_d" + std::to_string(d);
-        if (definedScalar(raw, key)) cam.dist.push_back(raw[key].as<double>());
-    }
-    if (raw["distortion_coeffs"] && raw["distortion_coeffs"].IsSequence()) {
-        cam.dist.clear();
-        for (const YAML::Node& c : raw["distortion_coeffs"])
-            cam.dist.push_back(c.as<double>());
-    }
-}
-// ─────────────────────────────────────────────────────────────────────────────
-// Extrinsic (calib.json)
+// calib.json: the "camera" block (intrinsics) and the camera<->lidar extrinsic
 // ─────────────────────────────────────────────────────────────────────────────
 using json = nlohmann::json;
 
@@ -246,6 +167,161 @@ static std::string stripSpaces(const std::string& s) {
     for (char ch : s)
         if (ch != ' ') out.push_back(ch);
     return out;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Camera intrinsics (calib.json -> the "camera" block)
+// ─────────────────────────────────────────────────────────────────────────────
+static bool camHasIntrinsics(const json& b) {
+    return b.is_object() && (b.contains("intrinsics") || b.contains("K") ||
+                             b.contains("camera_matrix") || b.contains("fx") ||
+                             b.contains("cam_fx"));
+}
+
+// Rank of a block path as a camera description: the plain "camera" key wins,
+// then camera_*/cam* names; everything else ranks last. Ties are broken by the
+// path, so the C++ (sorted map) and Python (file order) walk the same JSON to
+// the same block.
+static int camRank(const std::string& path) {
+    const std::size_t dot = path.rfind('.');
+    const std::string last =
+        lowerStr(dot == std::string::npos ? path : path.substr(dot + 1));
+    if (last == "camera") return 3;
+    if (last.rfind("camera", 0) == 0) return 2;
+    if (last.rfind("cam", 0) == 0) return 1;
+    return 0;
+}
+
+// Every JSON object of the tree with its dotted path (leaves are skipped).
+static void collectObjectBlocks(const json& node, const std::string& prefix,
+                                std::vector<Block>& out) {
+    if (!node.is_object()) return;
+    std::string p = prefix;
+    if (!p.empty()) p.pop_back();              // strip the trailing '.'
+    if (!p.empty()) out.push_back(Block{p, &node});
+    for (auto it = node.begin(); it != node.end(); ++it)
+        collectObjectBlocks(it.value(), prefix + it.key() + ".", out);
+}
+
+static bool jsonNumberByKeys(const json& obj,
+                             std::initializer_list<const char*> keys, double& out) {
+    for (const char* k : keys)
+        if (obj.contains(k) && obj[k].is_number()) {
+            out = obj[k].get<double>();
+            return true;
+        }
+    return false;
+}
+
+static std::string jsonStringByKeys(const json& obj,
+                                    std::initializer_list<const char*> keys,
+                                    const std::string& fallback) {
+    for (const char* k : keys)
+        if (obj.contains(k) && obj[k].is_string()) return obj[k].get<std::string>();
+    return fallback;
+}
+
+// Camera parameters come from the camera block of calib.json — the same file
+// that carries the extrinsic, so no separate camera.yaml is read:
+//
+//   {"camera": {"camera_model": "plumb_bob", "width": 1600, "height": 1300,
+//               "intrinsics": [fx,fy,cx,cy], "distortion_coeffs": [k1,k2,p1,p2,k3]},
+//    "results": {"T_lidar_camera": [...]}}
+//
+// key_used is the dotted path of the block that was read (usually "camera").
+void loadCameraFromCalib(const std::string& path, CameraParams& cam,
+                         std::string& key_used) {
+    std::ifstream f(path);
+    if (!f.is_open()) throw std::runtime_error("cannot open calib: " + path);
+    std::stringstream ss;
+    ss << f.rdbuf();
+    const std::string text = ss.str();
+    if (text.empty()) throw std::runtime_error("empty calib file: " + path);
+    const json data = json::parse(text);
+
+    std::vector<Block> blocks;
+    collectObjectBlocks(data, "", blocks);
+
+    std::vector<Block> cand;
+    for (const Block& b : blocks)
+        if (camHasIntrinsics(*b.val)) cand.push_back(b);
+    if (cand.empty())
+        throw std::runtime_error(
+            "no camera intrinsics block in " + path +
+            " (expected {\"camera\": {\"width\": .., \"height\": .., "
+            "\"intrinsics\": [fx,fy,cx,cy], \"distortion_coeffs\": [..]}}; "
+            "see data/calib-pinhole-2026-09-16.json)");
+    std::sort(cand.begin(), cand.end(), [](const Block& a, const Block& b) {
+        const int ra = camRank(a.path), rb = camRank(b.path);
+        return ra != rb ? ra > rb : a.path < b.path;
+    });
+
+    const json& b = *cand.front().val;
+    key_used = cand.front().path;
+
+    // Model: "plumb_bob"/"radtan"/"pinhole" -> pinhole, "fisheye"/"equidistant"
+    // -> fisheye (the same mapping the camera.yaml loader used).
+    const std::string model =
+        lowerStr(jsonStringByKeys(b, {"camera_model", "model", "distortion_model",
+                                      "cam_model"}, "PinholeCamera"));
+    cam.model = (model.find("fish") != std::string::npos ||
+                 model.find("equidistant") != std::string::npos)
+                    ? "fisheye" : "pinhole";
+
+    // Image size — required: the edge gate and the occlusion z-buffer are sized
+    // from it, and camera.yaml is no longer read.
+    double w = 0.0, h = 0.0;
+    if (!jsonNumberByKeys(b, {"width", "image_width", "cam_width"}, w) ||
+        !jsonNumberByKeys(b, {"height", "image_height", "cam_height"}, h))
+        throw std::runtime_error(
+            "camera block '" + key_used + "' in " + path +
+            " has no image size: add \"width\" and \"height\" "
+            "(see data/calib-pinhole-2026-09-16.json)");
+    cam.width  = static_cast<int>(w);
+    cam.height = static_cast<int>(h);
+
+    // Intrinsics: [fx,fy,cx,cy], a 3x3 K (row-major), or the individual keys.
+    if (b.contains("intrinsics")) {
+        const std::vector<double> v = flattenNumbers(b["intrinsics"]);
+        if (v.size() < 4)
+            throw std::runtime_error("camera block '" + key_used + "' in " + path +
+                                     ": 'intrinsics' must be [fx,fy,cx,cy]");
+        cam.K << v[0], 0.0, v[2],
+                 0.0, v[1], v[3],
+                 0.0, 0.0, 1.0;
+    } else if (b.contains("K") || b.contains("camera_matrix")) {
+        const std::vector<double> v =
+            flattenNumbers(b.contains("K") ? b["K"] : b["camera_matrix"]);
+        if (v.size() != 9)
+            throw std::runtime_error("camera block '" + key_used + "' in " + path +
+                                     ": 'K' must be a 3x3 matrix");
+        cam.K = mat3From9(v);
+    } else {
+        double fx = 0.0, fy = 0.0, cx = 0.0, cy = 0.0;
+        if (!jsonNumberByKeys(b, {"fx", "cam_fx"}, fx) ||
+            !jsonNumberByKeys(b, {"fy", "cam_fy"}, fy) ||
+            !jsonNumberByKeys(b, {"cx", "cam_cx"}, cx) ||
+            !jsonNumberByKeys(b, {"cy", "cam_cy"}, cy))
+            throw std::runtime_error(
+                "camera block '" + key_used + "' in " + path +
+                ": no intrinsics (expected \"intrinsics\": [fx,fy,cx,cy])");
+        cam.K << fx, 0.0, cx,
+                 0.0, fy, cy,
+                 0.0, 0.0, 1.0;
+    }
+
+    // Distortion: passed to OpenCV as-is, whatever its length.
+    if (b.contains("distortion_coeffs")) cam.dist = flattenNumbers(b["distortion_coeffs"]);
+    else if (b.contains("dist_coeffs"))  cam.dist = flattenNumbers(b["dist_coeffs"]);
+    else if (b.contains("D"))            cam.dist = flattenNumbers(b["D"]);
+    else {
+        cam.dist.clear();
+        for (int d = 0; d <= 5; ++d) {
+            const std::string k = "cam_d" + std::to_string(d);
+            if (b.contains(k) && b[k].is_number())
+                cam.dist.push_back(b[k].get<double>());
+        }
+    }
 }
 
 void loadCalib(const std::string& path, const std::string& name,

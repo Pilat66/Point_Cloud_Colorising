@@ -16,7 +16,6 @@ struct Options {
     std::string cloud_path      = "data/all_raw_points.pcd";
     std::string photos_dir      = "data";
     std::string trajectory_path = "data/trajectory.csv";
-    std::string camera_path     = "data/camera.yaml";
     std::string calib_path      = "data/calib.json";
     std::string output_path     = "coloured.pcd";
 
@@ -40,13 +39,14 @@ struct Options {
     double max_lidar_z         = std::numeric_limits<double>::infinity();
     int    jobs                = 0;    // worker threads; 0 = hardware_concurrency
 };
-// Camera intrinsics, loaded from camera.yaml (Kalibr-style keys cam_fx..cam_dN).
+// Camera intrinsics, loaded from the "camera" block of calib.json: model,
+// width/height (image size), intrinsics [fx,fy,cx,cy] and distortion_coeffs.
 struct CameraParams {
     std::string model = "pinhole";          // "pinhole" | "fisheye"
-    int width  = 1600;
-    int height = 1300;
+    int width  = 0;                         // 0 = not read yet
+    int height = 0;
     Eigen::Matrix3d K = Eigen::Matrix3d::Zero();       // [[fx,0,cx],[0,fy,cy],[0,0,1]]
-    std::vector<double> dist;                          // cam_d0..d5 / distortion_coeffs
+    std::vector<double> dist;                          // distortion_coeffs / cam_d0..d5
 };
 
 // Lidar trajectory. `time` sorted ascending; `quat` normalised (w,x,y,z).
@@ -95,7 +95,11 @@ Eigen::Quaterniond quatNormalize(const Eigen::Quaterniond& q);
 // ─────────────────────────────────────────────────────────────────────────────
 // I/O (src/io.cpp). All loaders throw std::runtime_error on failure.
 // ─────────────────────────────────────────────────────────────────────────────
-void loadCamera(const std::string& path, CameraParams& cam);
+// Camera intrinsics from the "camera" block of calib.json (the same file as the
+// extrinsic): model, width/height, intrinsics and distortion. key_used is the
+// dotted path of the block that was read (usually "camera").
+void loadCameraFromCalib(const std::string& path, CameraParams& cam,
+                         std::string& key_used);
 
 // Resolves the extrinsic from calib.json, honouring the Python semantics:
 // recursive key search, name-based direction auto-detection, 4/7/12/16 layouts.

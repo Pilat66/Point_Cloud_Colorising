@@ -25,11 +25,10 @@ min/max-бокс в заголовке; пустая выборка даёт в�
 |---|---|
 | Eigen3 ≥ 3.3 | 4×4-трансформы, кватернионы, SLERP |
 | OpenCV ≥ 4 | чтение фото, `cv::projectPoints` / `cv::fisheye::projectPoints` |
-| yaml-cpp | интринсики камеры (`camera.yaml`) |
 | nlohmann/json | vendored single-header в `third_party/nlohmann/` (не нужен в системе) |
 
 ```bash
-sudo apt install libeigen3-dev libopencv-dev libyaml-cpp-dev
+sudo apt install libeigen3-dev libopencv-dev
 ```
 
 ## 2. Сборка
@@ -51,7 +50,6 @@ cmake --build build -j4
     --cloud data/all_raw_points.pcd \
     --photos data \
     --trajectory data/trajectory.csv \
-    --camera data/camera.yaml \
     --calib data/calib.json \
     --output coloured.pcd
 ```
@@ -69,8 +67,7 @@ cmake --build build -j4
 | `--cloud` | `data/all_raw_points.pcd` | облако точек: бинарный `.pcd` или `.las` |
 | `--photos` | `data` | каталог со снимками, время в имени файла |
 | `--trajectory` | `data/trajectory.csv` | позы лидара |
-| `--camera` | `data/camera.yaml` | интринсики камеры |
-| `--calib` | `data/calib.json` | экстраинсики камера↔лидар |
+| `--calib` | `data/calib.json` | интринсики камеры (блок `camera`) + экстраинсики камера↔лидар |
 | `--output` | `coloured.pcd` | выходной PCD |
 
 ### 4.1 Фотографии
@@ -96,22 +93,38 @@ time,x,y,z,qx,qy,qz,qw               # 8 колонок, кватернион
 кватерниону); снимок вне диапазона траектории зажимается к ближайшему концу,
 если он не дальше `--time-tolerance`, иначе кадр пропускается.
 
-### 4.3 Камера (`camera.yaml`)
+### 4.3 Камера (блок `camera` в `calib.json`)
 
-```yaml
-cam_model: PinholeCamera      # или FisheyeCamera
-cam_width: 1600
-cam_height: 1300
-cam_fx: 915.9333861
-cam_fy: 916.9603583
-cam_cx: 786.2636665
-cam_cy: 643.6658678
-cam_d0: 0.05847161997         # k1
-cam_d1: -0.08154755066        # k2
-cam_d2: -0.001797524801       # p1
-cam_d3: -0.003098832848       # p2
-cam_d4: 0.01941807927         # k3
+Интринсики, дисторсия и размер кадра берутся из блока `camera` того же
+`--calib`, что и экстраинсик — отдельный `camera.yaml` не читается:
+
+```json
+{
+  "camera": {
+    "camera_model": "plumb_bob",
+    "width": 1600,
+    "height": 1300,
+    "intrinsics": [915.9333861, 916.9603583, 786.2636665, 643.6658678],
+    "distortion_coeffs": [0.05847161997, -0.08154755066, -0.001797524801,
+                          -0.003098832848, 0.01941807927]
+  },
+  "results": { "T_lidar_camera": [x, y, z, qx, qy, qz, qw] }
+}
 ```
+
+Распознаваемые ключи блока (первый найденный выигрывает):
+
+| Что | Ключи |
+|---|---|
+| Модель | `camera_model` / `model` / `distortion_model` / `cam_model`: `plumb_bob`, `pinhole`, `radtan` → pinhole; `fisheye`, `equidistant` → fisheye |
+| Размер кадра | `width`/`height` (обязательны), также принимаются `image_width`/`image_height`, `cam_width`/`cam_height` |
+| Интринсики | `intrinsics`: `[fx,fy,cx,cy]`; либо `K`/`camera_matrix` (3×3); либо `fx/fy/cx/cy` (или `cam_fx..cam_cy`) |
+| Дисторсия | `distortion_coeffs`, `dist_coeffs`, `D` (любая длина) или `cam_d0..cam_d5` |
+
+Образец формата — `data/calib-pinhole-2026-09-16.json` (свежая калибровка
+камеры набора «пруд Голубое»). Если блока `camera` нет или в нём нет
+`width`/`height`, прогон останавливается с внятной ошибкой — «молчаливого»
+размера по умолчанию больше нет.
 
 `cam_d0..cam_d5` либо `distortion_coeffs`; ключи `width/height/fx/fy/cx/cy`
 тоже поддержаны. Fisheye включается по `fish`/`equidistant` в имени модели.
@@ -191,7 +204,7 @@ Z-буфер (`Pass 3` в `colorise/src/project.cpp`, те же строки в
 | `128` и выше | на кадр остаётся 1–4 ячейки (при `1024` и кадре 1600×1300 — ровно 4): выживает лишь то, что ближе `zmin + tol` | 82 % и больше (при `1024` окрашено 0.5 % наблюдений) |
 
 Замеры ниже — облако `1788882799423559018.pcd` (1 201 612 точек),
-`data/camera.yaml` (1600×1300), гейты по умолчанию (`--max-range 20`,
+`data/calib.json` (блок `camera`, 1600×1300), гейты по умолчанию (`--max-range 20`,
 `--min-camera-dist 2`, `--max-view-angle 75`), `--occlusion-depth-tol 0.3`.
 Одиночный кадр — `data/1788882849226457611.png`, 977 398 точек после гейтов;
 значения воспроизводятся в C++ и в Python **число в число**.

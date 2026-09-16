@@ -59,14 +59,13 @@ static void createParentDirs(const std::string& path) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// One camera: --photos opens a camera group, the following --camera/--calib/--name
-// belong to it. Repeat the triple for every camera.
+// One camera: --photos opens a camera group, the following --calib/--name
+// belong to it. Repeat the pair for every camera.
 // ────────────────────────────────────────────────────────────────────────────
 struct CameraSpec {
     std::string name;
     std::string photos_dir;
-    std::string camera_path;   // intrinsics (camera.yaml, Kalibr-style keys)
-    std::string calib_path;    // extrinsic  (calib.json)
+    std::string calib_path;    // camera intrinsics + extrinsic (calib.json)
 };
 
 struct MapOptions {
@@ -109,16 +108,15 @@ static void printUsage() {
         "Colourises a pre-built point cloud map from timestamped photos and a CSV\n"
         "of lidar poses (ROS-free counterpart of the ColoriseMap node).\n"
         "\n"
-        "Camera groups: every --photos starts a new camera, and the --camera/--calib\n"
-        "that follow belong to it. Repeat the triple for each camera:\n"
-        "  --photos <dir> --camera <yaml> --calib <json> [ --photos ... ]\n"
+        "Camera groups: every --photos starts a new camera, and the --calib/--name\n"
+        "that follow belong to it. Repeat the pair for each camera:\n"
+        "  --photos <dir> --calib <json> [ --photos ... ]\n"
         "\n"
         "  --cloud <pcd|las>           map, in the world/map frame  [data/all_raw_points.pcd]\n"
         "  --trajectory <csv>          lidar poses in that frame    [data/trajectory.csv]\n"
         "  --output <pcd|las>          coloured map (.las = LAS 1.2) [coloured_map.pcd]\n"
         "  --photos <dir>              photos dir, capture time in the filename\n"
-        "  --camera <yaml>             intrinsics (cam_fx.. keys)\n"
-        "  --calib <json>              camera<->lidar extrinsic\n"
+        "  --calib <json>              camera intrinsics + camera<->lidar extrinsic\n"
         "  --name <name>               camera label for the log     [camN]\n"
         "  --map-max-range <m>         cull radius around a camera   [20.0] (0 = off)\n"
         "  --min-color-frames <n>      observations before a point is kept [1]\n"
@@ -187,9 +185,6 @@ static bool parseArgs(int argc, char** argv, MapOptions& o) {
             o.cameras.push_back(CameraSpec{});
             cur = static_cast<int>(o.cameras.size()) - 1;
             o.cameras[static_cast<std::size_t>(cur)].photos_dir = value(key);
-        } else if (key == "--camera") {
-            if (cur < 0) throw std::runtime_error("--camera must follow --photos");
-            o.cameras[static_cast<std::size_t>(cur)].camera_path = value(key);
         } else if (key == "--calib") {
             if (cur < 0) throw std::runtime_error("--calib must follow --photos");
             o.cameras[static_cast<std::size_t>(cur)].calib_path = value(key);
@@ -255,11 +250,9 @@ static bool parseArgs(int argc, char** argv, MapOptions& o) {
         }
     }
 
-    // Every camera group needs the full triple; label the unnamed ones camN.
+    // Every camera group needs its calib.json; label the unnamed ones camN.
     for (std::size_t c = 0; c < o.cameras.size(); ++c) {
         const std::string nth = std::to_string(c + 1);
-        if (o.cameras[c].camera_path.empty())
-            throw std::runtime_error("camera group " + nth + " has no --camera");
         if (o.cameras[c].calib_path.empty())
             throw std::runtime_error("camera group " + nth + " has no --calib");
         if (o.cameras[c].name.empty()) o.cameras[c].name = "cam" + nth;
@@ -359,7 +352,7 @@ struct FrameJob {
 static int run(const MapOptions& o) {
     if (o.cameras.empty())
         throw std::runtime_error("no camera given: use "
-                                 "--photos <dir> --camera <yaml> --calib <json>");
+                                 "--photos <dir> --calib <json>");
     if (!o.output_path.empty()) createParentDirs(o.output_path);
 
     const std::size_t ncam = o.cameras.size();
@@ -368,11 +361,11 @@ static int run(const MapOptions& o) {
     std::vector<CameraParams>       cams(ncam);
     std::vector<Eigen::Matrix4d>    T_cam_lidar(ncam, Eigen::Matrix4d::Identity());
     std::vector<std::vector<Photo>> photos(ncam);
-    std::vector<std::string>        key_used(ncam), dir_used(ncam);
+    std::vector<std::string>        key_used(ncam), dir_used(ncam), cam_key(ncam);
 
     for (std::size_t c = 0; c < ncam; ++c) {
         const CameraSpec& s = o.cameras[c];
-        loadCamera(s.camera_path, cams[c]);
+        loadCameraFromCalib(s.calib_path, cams[c], cam_key[c]);
         loadCalib(s.calib_path, o.extrinsic_name, o.extrinsic_direction,
                   T_cam_lidar[c], key_used[c], dir_used[c]);
         photos[c] = listPhotos(s.photos_dir);
@@ -382,9 +375,10 @@ static int run(const MapOptions& o) {
 
     for (std::size_t c = 0; c < ncam; ++c) {
         const CameraParams& cam = cams[c];
-        std::fprintf(stdout, "[camera] %s %s %dx%d K=[[%.3f, %.3f, %.3f], [%.3f, %.3f, %.3f], "
-                     "[%.3f, %.3f, %.3f]] dist=[",
+        std::fprintf(stdout, "[camera] %s %s %dx%d (calib: %s) K=[[%.3f, %.3f, %.3f], "
+                     "[%.3f, %.3f, %.3f], [%.3f, %.3f, %.3f]] dist=[",
                      o.cameras[c].name.c_str(), cam.model.c_str(), cam.width, cam.height,
+                     cam_key[c].c_str(),
                      cam.K(0, 0), cam.K(0, 1), cam.K(0, 2),
                      cam.K(1, 0), cam.K(1, 1), cam.K(1, 2),
                      cam.K(2, 0), cam.K(2, 1), cam.K(2, 2));

@@ -26,11 +26,10 @@ bag-е, только без ROS: снимки берутся из каталог
 |---|---|
 | Eigen3 ≥ 3.3 | 4×4-трансформы, кватернионы, SLERP |
 | OpenCV ≥ 4 | чтение фото, `cv::projectPoints` / `cv::fisheye::projectPoints` |
-| yaml-cpp | интринсики камеры (`camera.yaml`) |
 | nlohmann/json | vendored single-header в `../colorise/third_party/` |
 
 ```bash
-sudo apt install libeigen3-dev libopencv-dev libyaml-cpp-dev
+sudo apt install libeigen3-dev libopencv-dev
 ```
 
 ## 2. Сборка
@@ -51,7 +50,7 @@ cmake --build ColoriseMap/build -j4
 ./ColoriseMap/build/colorise_map \
     --cloud data/all_raw_points.pcd \
     --trajectory data/trajectory.csv \
-    --photos data --camera data/camera.yaml --calib data/calib.json \
+    --photos data --calib data/calib.json \
     --output coloured_map.pcd
 ```
 
@@ -59,13 +58,13 @@ cmake --build ColoriseMap/build -j4
 как есть: `./ColoriseMap/build/colorise_map --output coloured_map.pcd`.
 
 Несколько камер: **каждый `--photos` открывает новую камеру**, а следующие за ним
-`--camera` / `--calib` / `--name` относятся к ней. Тройка повторяется на каждую
+`--calib` / `--name` относятся к ней. Пара повторяется на каждую
 камеру:
 
 ```bash
 ./ColoriseMap/build/colorise_map --cloud map.pcd --trajectory traj.csv \
-    --photos dirRight --camera right.yaml --calib right.json --name right \
-    --photos dirLeft  --camera left.yaml  --calib left.json  --name left \
+    --photos dirRight --calib right.json --name right \
+    --photos dirLeft  --calib left.json  --name left \
     --output coloured_map.pcd
 ```
 
@@ -82,8 +81,7 @@ cmake --build ColoriseMap/build -j4
 | `--trajectory` | `data/trajectory.csv` | позы **лидара** в том же кадре |
 | `--output` | `coloured_map.pcd` | окрашенная карта: `.pcd` (по умолчанию бинарный `x y z intensity rgb`) или `.las` |
 | `--photos` | — | каталог снимков, время съёмки в имени файла |
-| `--camera` | — | интринсики (`cam_fx..`, Kalibr-стиль) |
-| `--calib` | — | экстраинсик камера↔лидар (`calib.json`) |
+| `--calib` | — | интринсики камеры (блок `camera`) + экстраинсик камера↔лидар (`calib.json`) |
 
 Форматы фото, траектории, камеры и экстраинсиков — ровно те же, что у
 `colorise_offline` (см. `colorise_offline_README.md` §3 и `colorise/README.md` §4):
@@ -97,7 +95,7 @@ cmake --build ColoriseMap/build -j4
 |---|---|
 | `data/all_raw_points.pcd` | карта (Livox MID360, world-кадр), 391 МБ |
 | `data/trajectory.csv` | траектория ~200 Гц |
-| `data/camera.yaml`, `data/calib.json` | интринсики/экстраинсик камеры `right` (1600×1300, pinhole) |
+| `data/calib.json` | блок `camera` (интринсики, 1600×1300, pinhole) + экстраинсик камеры `right`; образец формата — `data/calib-pinhole-2026-09-16.json` |
 | `data/*.png` | 82 кадра по 24 МБ облака (быстрый вариант проверки) |
 
 ---
@@ -206,10 +204,10 @@ cmake --build ColoriseMap/build -j4
 
 ```bash
 ./colorise/build/colorise_offline --cloud 1788882799423559018.pcd --photos data \
-    --trajectory data/trajectory.csv --camera data/camera.yaml --calib data/calib.json \
+    --trajectory data/trajectory.csv --calib data/calib.json \
     --output /tmp/a.pcd
 ./ColoriseMap/build/colorise_map --cloud 1788882799423559018.pcd --photos data \
-    --trajectory data/trajectory.csv --camera data/camera.yaml --calib data/calib.json \
+    --trajectory data/trajectory.csv --calib data/calib.json \
     --output /tmp/b.pcd
 cmp /tmp/a.pcd /tmp/b.pcd          # побайтовое совпадение
 ```
@@ -223,7 +221,8 @@ cmp /tmp/a.pcd /tmp/b.pcd          # побайтовое совпадение
 | `--jobs 1` против `--jobs` (авто) | побайтовое совпадение (детерминизм) |
 | `--min-color-frames 2` | `coloured=1,189,870 (99.02%)` — меньше, как и ожидается |
 | `--output out.las` | LAS 1.2, point format 3, 1 196 386 точек, RGB ×257, intensity сохранена |
-| Негативные CLI-кейсы (нет `--calib` в тройке, нет камер, `--compensation imu`) | внятная ошибка, exit 1 |
+| Негативные CLI-кейсы (нет `--calib` в группе камеры, нет камер, `--compensation imu`, старый флаг `--camera`) | внятная ошибка, exit 1 |
+| Камера читается из `data/calib.json` (`camera` блок) вместо `camera.yaml` | PCD побайтово совпал с прогоном до перехода: `md5 9b03201e…`, `coloured=618 290` (набор `data/1789476925898092722.las` + `data/img-1789476925898092722/`) |
 
 ---
 
@@ -237,7 +236,9 @@ cmp /tmp/a.pcd /tmp/b.pcd          # побайтовое совпадение
 | Кадров меньше, чем снимков | Какая-то камера не имеет пары в пределах `--max-time-offset` — увеличить допуск или синхронизировать каталоги фото |
 | Дырки на плоскостях, мало окрашенных точек в кадре | Уменьшить `--occlusion-cell` (4 → 2/1) или увеличить `--occlusion-depth-tol` |
 | Цвет «протекает» через контуры | Увеличить `--occlusion-cell` (4 → 8/16) или уменьшить `--occlusion-depth-tol` |
-| `--name must follow --photos` | Порядок аргументов: `--name` (как и `--camera`/`--calib`) относится к последней открытой группе `--photos` |
+| `--name must follow --photos` | Порядок аргументов: `--name` (как и `--calib`) относится к последней открытой группе `--photos` |
+| Ошибка `no camera intrinsics block in …` или `has no image size` | В `--calib` нет блока `camera` либо в нём нет `width`/`height`: добавить их (образец — `data/calib-pinhole-2026-09-16.json`) |
+| Ошибка `unknown option: '--camera'` | Флаг удалён: интринсики берутся из `--calib` (блок `camera`), `camera.yaml` больше не читается |
 
 > Примечание про время: в отличие от узла, здесь поза берётся на **время самого
 > снимка**, поэтому расхождение часов камеры и лидара лечится именно

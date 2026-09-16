@@ -1,0 +1,184 @@
+# ITER-20260916-165057
+---
+meta:
+  id: ITER-20260916-165057
+  status: completed
+  date_started: 2026-09-16 16:50:57
+  date_completed: 2026-09-16 16:58:00
+  branch: master
+
+plan: |
+  Запрос: переписать ColoriseMap/ так, чтобы параметры камеры брались только из
+  --calib calib.json; camera.yaml больше не используется. То же — для
+  colorise_offline.py и colorise/.
+
+  Уточнения пользователя по ходу планирования: в calib.json добавлен размер кадра
+  (camera.width = 1600, camera.height = 1300); образец формата —
+  data/calib-pinhole-2026-09-16.json; camera.yaml не использовать.
+
+  Реализация (единый источник — блок camera в calib.json, там же экстраинсик
+  results.T_lidar_camera):
+  1) colorise/src/io.cpp: удалён YAML-слой (loadYamlLenient/definedScalar/yDouble2)
+     и loadCamera(camera.yaml); добавлен loadCameraFromCalib(), переиспользующий
+     существующие помощники JSON (collectBlocks/flattenNumbers) и новый
+     collectObjectBlocks() для обхода объектов дерева. Выбор блока детерминирован:
+     ранжирование по имени (camera > camera_* > cam*) + сортировка по пути, чтобы
+     C++ и Python выбирали один и тот же блок. Алиасы: модель
+     camera_model/model/distortion_model/cam_model; размер width/height
+     (обязательны, также image_width/image_height, cam_width/cam_height);
+     интринсики intrinsics [fx,fy,cx,cy] | K/camera_matrix (3x3) | fx/fy/cx/cy;
+     дисторсия distortion_coeffs | dist_coeffs | D | cam_d0..cam_d5.
+     Без width/height — явная ошибка со ссылкой на образец формата.
+  2) colorise/include/colorise.h: Options::camera_path удалён; CameraParams::width/
+     height = 0; объявлен loadCameraFromCalib(path, cam, key_used).
+  3) colorise/src/main.cpp: флаг --camera удалён (usage + парсер); [camera] печатает
+     источник как «(calib: <ключ>)».
+  4) ColoriseMap/src/main.cpp: CameraSpec без camera_path; группа камеры —
+     «--photos <dir> --calib <json> [--name]» (пара вместо тройки); обновлены usage
+     и тексты ошибок.
+  5) colorise_offline.py: load_camera() заменён на load_camera_from_calib() с теми же
+     алиасами и тем же порядком выбора блока (1:1 с C++); --camera удалён; мёртвый
+     import yaml убран.
+  6) make_photo_plane.py: камера из --calib (следствие правки 5).
+  7) CMakeLists обоих таргетов: yaml-cpp убран (единственный потребитель удалён);
+     requirements.txt: pyyaml убран.
+
+  Проверки (по §3 clinerules):
+  - baseline до правок: прогон на data/1789476925898092722.las +
+    data/img-1789476925898092722/ с --camera data/camera.yaml --calib data/calib.json
+    для Python, colorise_offline и colorise_map — md5 9b03201ee4e8a1712629b3071e55fe9e
+    у всех трёх;
+  - после правок (без --camera) — побайтовое совпадение с baseline (cmp) во всех
+    трёх реализациях;
+  - паритет C++ ↔ Python и --jobs 1 ↔ авто; прогон с новой калибровкой
+    data/calib-pinhole-2026-09-16.json — паритет;
+  - негативные кейсы: --camera → unknown option; калибровка без блока camera; блок
+    camera без width/height → exit 1 (C++ и Python формулируют одинаково);
+  - make_photo_plane.py — smoke-прогон с --calib.
+
+request: |
+  Перепиши ColoriseMap/ чтобы он брал параметры камеры только из --calib calib.json.
+  --calib calib.json больше не используется.
+  То же сделай для colorise_offline.py и colorise/
+
+  добавить в calib.json размер фото: camera.width=1600; camera.height=1300
+  пример data/calib-pinhole-2026-09-16.json
+  не использовать camera.yaml
+
+description: >-
+  Параметры камеры (модель, размер кадра, интринсики, дисторсия) читаются только из
+  блока camera файла --calib; отдельный camera.yaml больше не используется ни одним
+  инструментом, флаг --camera удалён во всех трёх реализациях, yaml-cpp и pyyaml
+  убраны из зависимостей. Экстраинсик по-прежнему берётся из того же calib.json
+  (results.T_lidar_camera). Результат раскраски не изменился: PCD побайтово
+  совпадает с прогоном до перехода.
+
+changes:
+  - action: modified
+    file: colorise/src/io.cpp
+    description: >-
+      Удалены YAML-помощники и loadCamera(camera.yaml). Добавлены
+      camHasIntrinsics/camRank/collectObjectBlocks/jsonNumberByKeys/
+      jsonStringByKeys и loadCameraFromCalib(path, cam, key_used): поиск блока camera
+      с детерминированным выбором, обязательный width/height, intrinsics
+      [fx,fy,cx,cy] | K | fx..cy, дисторсия distortion_coeffs/dist_coeffs/D/cam_d0..
+  - action: modified
+    file: colorise/include/colorise.h
+    description: >-
+      Options::camera_path удалён; CameraParams::width/height = 0 (0 = не загружено);
+      объявлен loadCameraFromCalib.
+  - action: modified
+    file: colorise/src/main.cpp
+    description: >-
+      Флаг --camera удалён из usage и парсера; камера грузится из --calib, в строку
+      [camera] добавлен источник «(calib: <ключ>)».
+  - action: modified
+    file: ColoriseMap/src/main.cpp
+    description: >-
+      CameraSpec: убран camera_path; группа камеры — --photos + --calib (+ --name);
+      обновлены usage, сообщение об отсутствии калибровки и строка [camera].
+  - action: modified
+    file: colorise_offline.py
+    description: >-
+      load_camera(path) заменён на load_camera_from_calib(path) (те же алиасы и тот же
+      порядок выбора блока, что в C++); --camera удалён; удалён неиспользуемый import
+      yaml; строка [camera] печатает «(calib: <ключ>)».
+  - action: modified
+    file: make_photo_plane.py
+    description: >-
+      Камера берётся из --calib (load_camera_from_calib); --camera удалён; обновлены
+      docstring (пример, зависимости) и строка [camera].
+  - action: modified
+    file: colorise/CMakeLists.txt
+    description: Убраны find_package(yaml-cpp) и линковка yaml-cpp.
+  - action: modified
+    file: ColoriseMap/CMakeLists.txt
+    description: Убраны find_package(yaml-cpp) и линковка yaml-cpp.
+  - action: modified
+    file: requirements.txt
+    description: Убран pyyaml (в Python-инструментах больше нет чтения YAML).
+  - action: modified
+    file: colorise/README.md
+    description: >-
+      §1 зависимости без yaml-cpp, §3 запуск без --camera, §4 таблица аргументов,
+      §4.3 переписан на блок camera в calib.json (JSON-пример, таблица алиасов,
+      обязательный размер кадра), §8 — источник камеры.
+  - action: modified
+    file: ColoriseMap/README.md
+    description: >-
+      §1 зависимости, §3 запуск и пример нескольких камер (пара вместо тройки), §4
+      таблица аргументов и список данных, §8 команды и новые строки проверок, §9
+      строки про ошибки и удалённый --camera.
+  - action: modified
+    file: colorise_offline_README.md
+    description: >-
+      §1 зависимости без pyyaml, §2 запуск, §3 таблица аргументов, §3.3 переписан на
+      блок camera в calib.json.
+  - action: modified
+    file: README.md
+    description: >-
+      Раздел offline-раскраски: убран pyyaml, из таблицы аргументов убрана строка
+      --camera, --calib описан как источник и интринсиков, и экстраинсика, команда
+      без --camera.
+  - action: modified
+    file: cline/clinerules.md
+    description: >-
+      §2.2/§2.3 — зависимости без yaml-cpp и PyYAML; §3 — smoke-прогон переведён на
+      актуальные данные (data/1789476925898092722.las + data/img-1789476925898092722/)
+      и флаги без --camera; §4 — состав data/ (calib.json с блоком camera, образец
+      calib-pinhole-2026-09-16.json, camera.yaml больше не читается).
+  - action: created
+    file: cline/iterations/2026-09-16/ITER-20260916-165057.yaml
+    description: Файл итерации (meta, plan, request, description, changes, notes).
+  - action: modified
+    file: CHANGELOG.md
+    description: Добавлена запись об итерации в секцию 2026-09-16.
+
+dependencies:
+  - удалён pyyaml из requirements.txt (чтение camera.yaml больше не нужно)
+  - удалён yaml-cpp из colorise/CMakeLists.txt и ColoriseMap/CMakeLists.txt
+
+notes: >-
+  Приёмка (проверки на data/1789476925898092722.las + data/img-1789476925898092722/):
+  (1) baseline до правок (с --camera data/camera.yaml) и прогон после правок (без
+  --camera) дают побайтово одинаковый PCD — md5 9b03201ee4e8a1712629b3071e55fe9e,
+  total=618 335, coloured=618 290 (99.99 %) в Python, colorise_offline и colorise_map;
+  (2) cmp Python == C++ == colorise_map; (3) colorise_map --jobs 1 == --jobs авто;
+  (4) прогон с новой калибровкой data/calib-pinhole-2026-09-16.json (интринсики
+  916.2666343/917.3359564/786.1529879/643.486012, дисторсия
+  [0.05830131947, -0.08008645192, -0.001855097139, -0.003142767558, 0.0]) — паритет
+  C++ ↔ Python (md5 463ecf53cb7b573d5bd82b5d1d095c26); (5) негативные кейсы:
+  --camera → «unknown option», калибровка без блока camera → «no camera intrinsics
+  block in …», блок без width/height → «has no image size: add "width" and "height"»
+  (формулировка совпадает в C++ и Python), exit 1 везде; (6) make_photo_plane.py
+  работает с --calib.
+  Данные: в data/calib.json добавлены camera.width = 1600 и camera.height = 1300
+  (каталог data/ в .gitignore, в коммит не попадает); образец формата
+  data/calib-pinhole-2026-09-16.json создан пользователем. camera.yaml оставлен на
+  диске, но не читается ни одним инструментом.
+  Найдено при проверке, в итерацию не входит: fisheye-путь Python
+  (cv2.fisheye.projectPoints в project_and_sample, colorise_offline.py:241) падает с
+  ассертом OpenCV 5.0 «objectPoints.type() == CV_32FC3 || CV_64FC3»; строка этим
+  изменением не затронута (проблема существовала до правки, C++ fisheye работает).
+  ROS-пакет (src/, include/, configs/, launch/) не менялся — он по-прежнему читает
+  configs/calibration.yaml.

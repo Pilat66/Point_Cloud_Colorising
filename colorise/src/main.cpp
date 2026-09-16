@@ -62,8 +62,8 @@ static void printUsage() {
         "  --cloud <pcd>             input point cloud        [data/all_raw_points.pcd]\n"
         "  --photos <dir>            dir of timestamped photos [data]\n"
         "  --trajectory <csv>        lidar poses              [data/trajectory.csv]\n"
-        "  --camera <yaml>           pinhole/fisheye intrinsics [data/camera.yaml]\n"
-        "  --calib <json>            camera<->lidar extrinsic [data/calib.json]\n"
+        "  --calib <json>            camera + extrinsic: intrinsics (\"camera\" block)\n"
+        "                            and camera<->lidar transform [data/calib.json]\n"
         "  --output <pcd|las>        coloured cloud (.las=LAS 1.2) [coloured.pcd]\n"
         "  --extrinsic-name <key>    exact/suffix key in calib.json\n"
         "  --extrinsic-direction {camera_from_lidar|lidar_from_camera}\n"
@@ -129,7 +129,6 @@ static bool parseArgs(int argc, char** argv, Options& o) {
         if (key == "--cloud") o.cloud_path = num_value(key);
         else if (key == "--photos") o.photos_dir = num_value(key);
         else if (key == "--trajectory") o.trajectory_path = num_value(key);
-        else if (key == "--camera") o.camera_path = num_value(key);
         else if (key == "--calib") o.calib_path = num_value(key);
         else if (key == "--output") o.output_path = num_value(key);
         else if (key == "--extrinsic-name") o.extrinsic_name = num_value(key);
@@ -203,9 +202,10 @@ struct FrameResult {
 static int run(const Options& o) {
     if (!o.output_path.empty()) createParentDirs(o.output_path);
 
-    // Camera
+    // Camera: intrinsics + image size from the calib.json camera block.
     CameraParams cam;
-    loadCamera(o.camera_path, cam);
+    std::string cam_key;
+    loadCameraFromCalib(o.calib_path, cam, cam_key);
     std::fprintf(stdout, "[camera] %s %dx%d K=[[%.3f, %.3f, %.3f], [%.3f, %.3f, %.3f], "
                  "[%.3f, %.3f, %.3f]] dist=[", cam.model.c_str(), cam.width, cam.height,
                  cam.K(0, 0), cam.K(0, 1), cam.K(0, 2),
@@ -213,7 +213,7 @@ static int run(const Options& o) {
                  cam.K(2, 0), cam.K(2, 1), cam.K(2, 2));
     for (std::size_t i = 0; i < cam.dist.size(); ++i)
         std::fprintf(stdout, "%s%.5f", i ? ", " : "", cam.dist[i]);
-    std::fprintf(stdout, "]\n");
+    std::fprintf(stdout, "] (calib: %s)\n", cam_key.c_str());
 
     // Extrinsic
     Eigen::Matrix4d T_cam_lidar;
