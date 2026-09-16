@@ -22,13 +22,34 @@
     Время снимка берётся из имени файла (эпоха в нс/мс/с), поза камеры — из
     траектории и калибровки, той же цепочкой, что и в colorise_offline.
 
+Наклон плоскости (--tilt-x, --tilt-y)
+    Плоскость можно наклонить: углы задаются вокруг осей X и Y системы камеры
+    (в градусах, правило правой руки), порядок поворотов R = Ry(--tilt-y) · Rx(
+    --tilt-x). Точка привязки не меняется — плоскость проходит через прежний
+    центр (cx, cy, distance) на оптической оси, наклоняется только её нормаль.
+    Границы сетки пересчитываются так, чтобы наклонённая плоскость по-прежнему
+    покрывала весь кадр: лучи через четыре угла изображения пересекаются с
+    наклонённой плоскостью, и по ним берутся границы в собственных координатах
+    плоскости (--margin действует как раньше — растягивает прямоугольник).
+
+    При больших углах кадр «растягивается» по плоскости: её площадь и число
+    точек растут как 1/cos угла, а дальние углы уезжают дальше по расстоянию
+    (печатается в [plane-tilt], с предупреждением при выходе за --max-range
+    раскраски, по умолчанию 20 м).
+
 Использование
     python3 make_photo_plane.py data/1788882799423559018.png \
         --trajectory data/trajectory.csv \
         --calib data/calib-pinhole-2026-09-16.json --distance 5 --ppm 100
 
+    # наклон: 30° вокруг X и 20° вокруг Y (оси камеры)
+    python3 make_photo_plane.py data/1788882799423559018.png \
+        --trajectory data/trajectory.csv \
+        --calib data/calib.json --distance 5 --ppm 100 --tilt-x 30 --tilt-y 20
+
 Результат
     <имя фото>-plane-<d>m-<ppm>ppm.pcd   облако (x y z intensity rgb)
+    <имя фото>-plane-<d>m-<ppm>ppm-tilt<X>x<Y>deg.pcd   то же с наклоном
 
 Зависимости: numpy, opencv-python; загрузчики переиспользуются из
 colorise_offline.py (импорт безопасен — там всё под if __name__).
@@ -45,6 +66,11 @@ import numpy as np
 import colorise_offline as co
 
 
+# Потолок на размер сетки: защита от около-касательных наклонов, где площадь
+# плоскости растёт как 1/cos угла и число точек уходит в бесконечность.
+MAX_GRID_POINTS = 100_000_000
+
+
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(
         description="Облако точек параллельно плоскости фотографии "
@@ -57,6 +83,10 @@ def parse_args(argv=None):
     ap.add_argument("--distance", type=float, required=True,
                     help="расстояние от камеры до плоскости, м (по оптической оси)")
     ap.add_argument("--ppm", type=float, required=True, help="точек на квадратный метр")
+    ap.add_argument("--tilt-x", type=float, default=0.0,
+                    help="наклон плоскости вокруг оси X камеры, градусы [0]")
+    ap.add_argument("--tilt-y", type=float, default=0.0,
+                    help="наклон плоскости вокруг оси Y камеры, градусы [0]")
     ap.add_argument("--margin", type=float, default=1.05,
                     help="запас за границы кадра, доли (1.0 = ровно по углам) [1.05]")
     ap.add_argument("--output", default="", help="куда писать облако [<имя фото>-plane-...pcd]")
@@ -142,6 +172,62 @@ def plane_rect(cam, distance, margin):
     return cx, cy, hx, hy
 
 
+def tilt_rotation(tilt_x_deg, tilt_y_deg):
+    """
+    Матрица наклона плоскости в системе камеры: R = Ry(tilt_y) · Rx(tilt_x).
+    Углы в градусах, правило правой руки. Столбцы — оси плоскости в кадре
+    камеры: e1, e2 лежат в плоскости, третий столбец — её нормаль.
+    """
+    tx = math.radians(tilt_x_deg)
+    ty = math.radians(tilt_y_deg)
+    cx_, sx = math.cos(tx), math.sin(tx)
+    cy_, sy = math.cos(ty), math.sin(ty)
+    rot_x = np.array([[1.0, 0.0, 0.0], [0.0, cx_, -sx], [0.0, sx, cx_]])
+    rot_y = np.array([[cy_, 0.0, sy], [0.0, 1.0, 0.0], [-sy, 0.0, cy_]])
+    return rot_y @ rot_x
+
+
+def tilted_plane_frame(cam, distance, margin, rot_tilt):
+    """
+    Наклонённая плоскость, проходящая через прежний центр (cx, cy, distance).
+
+    Возвращает (pivot, e1, e2, s_mid, t_mid, hs, ht, corner_dist, quad_area):
+    pivot — точка привязки, e1/e2 — орты плоскости, s_mid/t_mid и hs/ht — центр и
+    полуразмеры сетки в этих координатах, corner_dist — расстояния до пересечений
+    лучей через углы кадра с плоскостью, quad_area — площадь четырёхугольника,
+    который кадр занимает на плоскости.
+
+    Границы берутся именно по этим пересечениям, поэтому наклонённая плоскость
+    покрывает кадр так же, как перпендикулярная при нулевом наклоне, а --margin
+    растягивает прямоугольник в собственных координатах плоскости. При наклоне
+    пятно кадра на плоскости — четырёхугольник, а сетка прямоугольная: её площадь
+    (и число точек) больше пятна, см. [stats].
+    """
+    px, py, _, _ = plane_rect(cam, distance, margin)
+    pivot = np.array([px, py, distance], np.float64)
+    e1, e2, n = rot_tilt[:, 0], rot_tilt[:, 1], rot_tilt[:, 2]
+
+    rays = image_corner_rays(cam)
+    dirs = np.column_stack([rays[:, 0], rays[:, 1], np.ones(rays.shape[0])])
+    nd = dirs @ n                                   # n·d по каждому лучу
+    lam = float(n @ pivot) / nd                     # параметр вдоль луча
+    if not np.all(np.isfinite(lam)) or np.any(np.abs(nd) < 1e-9) or np.any(lam <= 0.0):
+        raise SystemExit(
+            "наклон слишком велик для этого кадра: лучи через его углы не "
+            "пересекают плоскость перед камерой (уменьшите --tilt-x/--tilt-y)")
+
+    hits = dirs * lam[:, None]
+    rel = hits - pivot
+    s, t = rel @ e1, rel @ e2
+    s_mid = 0.5 * (s.min() + s.max())
+    t_mid = 0.5 * (t.min() + t.max())
+    hs = 0.5 * (s.max() - s.min()) * margin
+    ht = 0.5 * (t.max() - t.min()) * margin
+    quad_area = 0.5 * abs(float(np.dot(s, np.roll(t, -1)) - np.dot(t, np.roll(s, -1))))
+    return (pivot, e1, e2, s_mid, t_mid, hs, ht,
+            np.linalg.norm(hits, axis=1), quad_area)
+
+
 def camera_pose_at(traj, t, tol):
     """(T_world_lidar, t_used) на время t; T=None, если t вне траектории сверх tol."""
     if t < traj.min_t - tol or t > traj.max_t + tol:
@@ -193,14 +279,42 @@ def main(argv=None):
         T_world_cam[0, 3], T_world_cam[1, 3], T_world_cam[2, 3],
         np.round(T_world_cam[:3, :3], 4)))
 
-    cx, cy, hx, hy = plane_rect(cam, args.distance, args.margin)
+    if abs(args.tilt_x) >= 90.0 or abs(args.tilt_y) >= 90.0:
+        raise SystemExit("--tilt-x/--tilt-y должны быть по модулю < 90°: "
+                         "наклоняется нормаль плоскости, а не камера")
+    tilted = abs(args.tilt_x) > 0.0 or abs(args.tilt_y) > 0.0
+
+    if tilted:
+        rot_tilt = tilt_rotation(args.tilt_x, args.tilt_y)
+        pivot, e1, e2, mid_s, mid_t, hx, hy, corner_dist, quad_area = tilted_plane_frame(
+            cam, args.distance, args.margin, rot_tilt)
+        print("[tilt] Rx={:g}° Ry={:g}° (R = Ry·Rx), нормаль плоскости в кадре "
+              "камеры n=({:.4f}, {:.4f}, {:.4f})".format(
+                  args.tilt_x, args.tilt_y,
+                  rot_tilt[0, 2], rot_tilt[1, 2], rot_tilt[2, 2]))
+        print("[plane-tilt] углы кадра на плоскости: {:.2f}..{:.2f} м по расстоянию"
+              .format(corner_dist.min(), corner_dist.max()))
+        if corner_dist.max() > 20.0:
+            print("[WARN] дальний угол плоскости на {:.1f} м: при стандартном "
+                  "--max-range 20 м в colorise_offline эти точки не будут раскрашены"
+                  .format(corner_dist.max()))
+    else:
+        mid_s, mid_t, hx, hy = plane_rect(cam, args.distance, args.margin)
+
     step = 1.0 / math.sqrt(args.ppm)
     nx = max(2, int(round(2.0 * hx / step)) + 1)
     ny = max(2, int(round(2.0 * hy / step)) + 1)
-    xs = cx + (np.arange(nx) - 0.5 * (nx - 1)) * step
-    ys = cy + (np.arange(ny) - 0.5 * (ny - 1)) * step
+    if nx * ny > MAX_GRID_POINTS:
+        raise SystemExit("сетка {}x{} = {:,} точек, лимит {:,}: уменьшите --ppm "
+                         "или наклон".format(nx, ny, nx * ny, MAX_GRID_POINTS))
+    # Без наклона xs/ys — координаты в кадре камеры (как было); с наклоном — в
+    # базисе плоскости (e1, e2) относительно точки привязки pivot.
+    xs = mid_s + (np.arange(nx) - 0.5 * (nx - 1)) * step
+    ys = mid_t + (np.arange(ny) - 0.5 * (ny - 1)) * step
     w, h = cam["width"], cam["height"]
     base = "{}-plane-{:g}m-{:g}ppm".format(stem, args.distance, args.ppm)
+    if tilted:
+        base += "-tilt{:g}x{:g}deg".format(args.tilt_x, args.tilt_y)
     out_path = args.output or (base + ".pcd")
 
     # Потоковая генерация: точки считаются порциями по ~--chunk штук и сразу
@@ -220,8 +334,11 @@ def main(argv=None):
         for r0 in range(0, ny, rows_per_chunk):
             yy = ys[r0:r0 + rows_per_chunk]
             gx, gy = np.meshgrid(xs, yy)
-            p_cam = np.stack([gx.ravel(), gy.ravel(),
-                              np.full(gx.size, args.distance)], axis=1)
+            if tilted:
+                p_cam = pivot + np.outer(gx.ravel(), e1) + np.outer(gy.ravel(), e2)
+            else:
+                p_cam = np.stack([gx.ravel(), gy.ravel(),
+                                  np.full(gx.size, args.distance)], axis=1)
             xyz = (R_wc @ p_cam.T).T + o_wc
             rec = np.empty(p_cam.shape[0], dt)
             rec["x"], rec["y"], rec["z"] = xyz[:, 0], xyz[:, 1], xyz[:, 2]
@@ -242,8 +359,14 @@ def main(argv=None):
     vis_area = (args.distance * w / cam["K"][0, 0]) * (args.distance * h / cam["K"][1, 1])
     print("[plane] {:.2f} x {:.2f} м, шаг сетки {:.4f} м, сетка {}x{}".format(
         2 * hx, 2 * hy, step, nx, ny))
-    print("[stats] точек {}  (в кадре ожидается ~{:.0f} при площади кадра {:.1f} м²)".format(
-        written, vis_area * args.ppm, vis_area))
+    if tilted:
+        print("[stats] точек {}  (пятно кадра на плоскости {:.1f} м² -> в кадре ~{:.0f} "
+              "точек; площадь сетки {:.1f} м² — прямоугольник вокруг пятна, {:.1f}x "
+              "больше)".format(written, quad_area, quad_area * args.ppm, 4.0 * hx * hy,
+                               (4.0 * hx * hy) / quad_area))
+    else:
+        print("[stats] точек {}  (в кадре ожидается ~{:.0f} при площади кадра {:.1f} м²)".format(
+            written, vis_area * args.ppm, vis_area))
     if args.margin < 1.0:
         print("[WARN] --margin {} < 1.0: края кадра не покрыты точками".format(args.margin))
     if args.distance <= 2.0:
