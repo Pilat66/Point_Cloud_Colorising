@@ -217,3 +217,16 @@ prints the spread before and after, so the effect is visible per folder.
 the script. Dependencies: `numpy` + `opencv-python` (`scikit-image` is not
 needed).
 
+
+
+### Thinning the photo series
+
+`thin_photos.py` copies photos from a source folder to a destination folder
+keeping only frames that are at least `--interval` seconds apart (default 1 s).
+Frame times come from the file names (epoch in ns/ms/s, same parsing as
+`colorise_offline`); names are preserved, so the thinned folder can be fed to
+the colourisers as is.
+
+```bash
+python3 thin_photos.py data/img-dir thinned --interval 1.0
+```
