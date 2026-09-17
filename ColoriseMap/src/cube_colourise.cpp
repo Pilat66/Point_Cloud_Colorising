@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdio>
 #include <exception>
+#include <fstream>
 #include <limits>
 #include <mutex>
 #include <thread>
@@ -14,6 +15,8 @@
 #include <vector>
 
 #include <opencv2/opencv.hpp>
+
+#include <filesystem>
 
 namespace {
 
@@ -279,6 +282,10 @@ int runCubeColourise(const CubeOptions& o) {
     std::vector<uint32_t> out(n, 0);
     std::vector<char>     has(n, 0);
     std::atomic<long long> uniq{0};
+    // --debug1: индекс фото (в списке ph), давшего цвет точке; хранится только
+    // при включённой опции (+4 Б на точку), dt/dist/score пересчитываются при записи.
+    const bool  debug1   = !o.debug1_path.empty();
+    std::vector<uint32_t> dbg_photo(debug1 ? n : 0, 0xFFFFFFFFu);
 
     const double cos_view = (o.max_view_angle_deg < 180.0)
         ? std::cos(o.max_view_angle_deg * M_PI / 180.0) : -1.0;
@@ -398,6 +405,7 @@ int runCubeColourise(const CubeOptions& o) {
                         o.score_w_dist * std::min(1.0, d3 / o.score_d_ref);
                     if (score < best[j]) {
                         best[j] = static_cast<float>(score);
+                        if (debug1) dbg_photo[j] = static_cast<uint32_t>(fr.pi);
                         const int su = static_cast<int>(std::nearbyint(
                             static_cast<double>(iu) * img.cols / cam.width));
                         const int sv = static_cast<int>(std::nearbyint(
@@ -443,6 +451,62 @@ int runCubeColourise(const CubeOptions& o) {
         std::printf("  wrote %s (LAS 1.4 fmt 7, RGB + gps_time, %s points)\n",
                     o.output_path.c_str(),
                     withCommas(o.keep_uncolored ? static_cast<long long>(n) : coloured).c_str());
+    }
+
+    // ── --debug1: CSV «какой кадр дал цвет какой точке» ────────────────────
+    if (debug1) {
+        const auto t_dbg = std::chrono::steady_clock::now();
+        std::ofstream df(o.debug1_path, std::ios::binary);
+        if (!df.is_open())
+            throw std::runtime_error("cannot write debug1 csv: " + o.debug1_path);
+        for (std::size_t i = 0; i < ph.size(); ++i)
+            df << "# photo " << i << " = "
+               << std::filesystem::path(ph[i].path).filename().string() << '\n';
+        // gps_time в этой карте квантован (~0.09 с, у точки есть «двойники»),
+        // поэтому точка однозначно определяется парой (point, gps_time), где
+        // point — номер строки в выходном LAS (порядок совпадает с порядком
+        // этого CSV).
+        df << "point,gps_time,photo,dt,dist,score\n";
+        std::vector<int> frame_of_photo(ph.size(), -1);
+        for (std::size_t fi = 0; fi < frames.size(); ++fi)
+            frame_of_photo[frames[fi].pi] = static_cast<int>(fi);
+        std::string rowbuf;
+        rowbuf.reserve(1 << 20);
+        char line[256];
+        long long rows = 0;
+        std::size_t out_row = 0;               // номер точки в выходном LAS
+        for (std::size_t k = 0; k < n; ++k) {
+            const bool written = o.keep_uncolored || has[k];
+            const std::size_t this_row = out_row;   // номер ЭТОЙ точки в выходе
+            if (written) ++out_row;
+            if (!has[k]) continue;
+            const uint32_t pidx = dbg_photo[k];
+            const int fi = frame_of_photo[pidx];
+            if (fi < 0) continue;                       // не бывает: победитель всегда с позой
+            const Frame& fr = frames[static_cast<std::size_t>(fi)];
+            const LasPacked& q = pts[k];
+            const double dtp = std::fabs(fr.t - q.t);
+            const double dx = sx * q.X + ox - fr.c.x();
+            const double dy = sy * q.Y + oy - fr.c.y();
+            const double dzz = sz * q.Z + oz - fr.c.z();
+            const double dist = std::sqrt(dx * dx + dy * dy + dzz * dzz);
+            const double score = o.score_w_time * dtp / o.score_t_ref +
+                                 o.score_w_dist * std::min(1.0, dist / o.score_d_ref);
+            std::snprintf(line, sizeof(line), "%zu,%.9f,%u,%.6f,%.6f,%.9f\n",
+                          this_row, q.t, pidx, dtp, dist, score);
+            rowbuf.append(line);
+            if (rowbuf.size() >= (1u << 20)) {
+                df << rowbuf;
+                rowbuf.clear();
+            }
+            ++rows;
+        }
+        df << rowbuf;
+        if (!df)
+            throw std::runtime_error("cannot write debug1 csv (disk full?): " + o.debug1_path);
+        std::printf("[debug1] %s rows -> %s (%.1fs)\n",
+                    withCommas(rows).c_str(), o.debug1_path.c_str(),
+                    std::chrono::duration<double>(std::chrono::steady_clock::now() - t_dbg).count());
     }
     std::printf("[time] %.1fs total\n",
                 std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count());

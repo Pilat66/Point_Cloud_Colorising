@@ -105,6 +105,7 @@ struct MapOptions {
     double      score_w_dist        = 1.0;    // --score-dist-weight
     double      score_t_ref         = 1.0;    // --score-time-scale, s
     double      score_d_ref         = 10.0;   // --score-dist-scale, m
+    std::string debug1_path;              // --debug1 <csv> (cube mode only)
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -142,6 +143,8 @@ static void printUsage() {
         "  --score-dist-weight <w>     cube mode: weight of distance    [1.0]\n"
         "  --score-time-scale <s>      cube mode: |dt| normaliser       [1.0]\n"
         "  --score-dist-scale <m>      cube mode: distance normaliser   [10.0]\n"
+        "  --debug1 <csv>              cube mode: CSV \"which photo coloured\" \
+which point (by gps_time)\n"
         "  --extrinsic-name <key>      exact/suffix key in calib.json\n"
         "  --extrinsic-direction {camera_from_lidar|lidar_from_camera}\n"
         "  --euler-order {xyz|zyx}     Euler rotation order          [xyz]\n"
@@ -241,6 +244,8 @@ static bool parseArgs(int argc, char** argv, MapOptions& o) {
             o.score_t_ref = parseDoubleValue(value(key).c_str(), key);
         else if (key == "--score-dist-scale")
             o.score_d_ref = parseDoubleValue(value(key).c_str(), key);
+        else if (key == "--debug1")
+            o.debug1_path = value(key);
 
         else if (key == "--extrinsic-name") o.extrinsic_name = value(key);
         else if (key == "--extrinsic-direction") {
@@ -757,6 +762,7 @@ static int runCube(const MapOptions& o, const CameraSpec& cam) {
     c.score_t_ref         = o.score_t_ref;
     c.score_d_ref         = o.score_d_ref;
     c.keep_uncolored      = o.keep_uncolored;
+    c.debug1_path         = o.debug1_path;
     c.jobs                = o.jobs;
     return runCubeColourise(c);
 }
@@ -772,6 +778,9 @@ int main(int argc, char** argv) {
                     "(--photos <dir> --calib <json>)");
             return runCube(o, o.cameras.front());
         }
+        if (!o.debug1_path.empty())
+            throw std::runtime_error(
+                "--debug1 works only together with --cube");
         return run(o);
     } catch (const std::exception& e) {
         std::fprintf(stderr, "\n[error] exception: %s\n", e.what());

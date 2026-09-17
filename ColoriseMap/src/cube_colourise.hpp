@@ -45,6 +45,10 @@ struct CubeOptions {
 
     bool   keep_uncolored       = false;
     int    jobs                 = 0;     // 0 = все ядра
+
+    // --debug1 <csv>: CSV «какой кадр дал цвет какой точке» (точки — по gps_time;
+    // строки только для окрашенных точек, в порядке кубов).
+    std::string debug1_path;
 };
 
 // Возвращает 0 при успехе, бросает std::runtime_error при ошибке.
