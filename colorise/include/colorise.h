@@ -4,6 +4,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <string>
 #include <vector>
@@ -127,35 +128,42 @@ void saveCloud(const std::string& path, const Cloud& cloud,
 // ─────────────────────────────────────────────────────────────────────────────
 // LAS with timestamps (cube colourisation mode).
 //
-// Raw point data: X/Y/Z stay the original int32 with the header scale/offset,
-// so they can be written back bit-exactly; `time` holds gps_time (empty when
-// the point format carries no timestamp). Point formats 0-10 are accepted
-// (gps_time lives at byte 20 for formats 1/3/4/5 and at byte 22 for 6-10).
+// Потоковое чтение: точки отдаются чанками, поэтому полный набор «сырых»
+// массивов в памяти не нужен (важно для карт в десятки миллионов точек).
+// gps_time лежит по смещению 20 (форматы 1/3/4/5) или 22 (форматы 6-10).
 // ─────────────────────────────────────────────────────────────────────────────
-struct LasRaw {
-    std::vector<int32_t>  X, Y, Z;
-    std::vector<uint16_t> intensity;
-    std::vector<double>   time;
-    int    fmt     = 0;
-    int    rec_len = 0;
-    double sx = 0.0, sy = 0.0, sz = 0.0;
-    double ox = 0.0, oy = 0.0, oz = 0.0;
-
-    std::size_t n() const { return X.size(); }
-    bool hasTime() const { return !time.empty(); }
-    double x(std::size_t i) const { return sx * X[i] + ox; }
-    double y(std::size_t i) const { return sy * Y[i] + oy; }
-    double z(std::size_t i) const { return sz * Z[i] + oz; }
+struct LasMeta {
+    int         fmt     = 0;
+    int         rec_len = 0;
+    std::size_t n       = 0;
+    double      sx = 1.0, sy = 1.0, sz = 1.0;
+    double      ox = 0.0, oy = 0.0, oz = 0.0;
+    bool        has_time = false;
 };
 
-void loadLasRaw(const std::string& path, LasRaw& las);
+// cb(idx0, count, X, Y, Z, intensity, time) — time == nullptr без gps_time.
+std::size_t streamLasRaw(
+    const std::string& path, LasMeta& meta,
+    const std::function<void(std::size_t, std::size_t, const int32_t*, const int32_t*,
+                             const int32_t*, const uint16_t*, const double*)>& cb,
+    std::size_t chunk_records = std::size_t(1) << 20);
 
-// Writes LAS 1.4 point format 7 (RGB + gps_time), in the order given by `order`
-// (points with keep[i] == 0 are skipped). Coordinates, intensity and gps_time
-// are copied from `las` unchanged.
-void saveLas7(const std::string& path, const LasRaw& las,
-              const std::vector<uint32_t>& order, const std::vector<char>& keep,
-              const std::vector<uint32_t>& rgb);
+// Упакованная запись точки для кубового режима: точки лежат в порядке
+// пространственного индекса, поэтому обход куба — последовательный доступ.
+// gps_time хранится исходным double, координаты — исходными int32.
+struct LasPacked {
+    double   t = 0.0;
+    int32_t  X = 0, Y = 0, Z = 0;
+    uint16_t intensity = 0;
+    uint16_t pad = 0;
+};
+
+// Пишет LAS 1.4 point format 7 из упакованных точек (порядок = порядок массива);
+// точки с keep[k] == 0 пропускаются. Координаты/время/intensity переносятся как есть.
+void saveLasPacked7(const std::string& path, const std::vector<LasPacked>& pts,
+                    const std::vector<char>& keep, const std::vector<uint32_t>& rgb,
+                    double sx, double sy, double sz,
+                    double ox, double oy, double oz);
 
 // Photos from a directory, timestamped from their filenames, sorted by time.
 std::vector<Photo> listPhotos(const std::string& dir);

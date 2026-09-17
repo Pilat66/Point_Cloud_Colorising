@@ -28,6 +28,36 @@ std::string withCommas(long long v) {
 }
 
 // Простой parallel-for по диапазонам [0, n).
+// Динамическая выдача блоков (атомарный счётчик): кубы разной плотности, поэтому
+// статическое разбиение даёт перекос по потокам. Результат не зависит от
+// распределения блоков: каждая точка принадлежит одному кубу и обновляется
+// только своим потоком.
+template <typename F>
+void parallelDynamic(std::size_t count, int jobs, std::size_t chunk, F fn) {
+    if (count == 0) return;
+    if (jobs <= 1) { fn(0, std::size_t(0), count); return; }
+    std::atomic<std::size_t> next{0};
+    std::vector<std::thread> th;
+    std::mutex mu;
+    std::exception_ptr err;
+    for (int t = 0; t < jobs; ++t) {
+        th.emplace_back([&, t] {
+            try {
+                for (;;) {
+                    const std::size_t lo = next.fetch_add(chunk);
+                    if (lo >= count) break;
+                    fn(t, lo, std::min(count, lo + chunk));
+                }
+            } catch (...) {
+                std::lock_guard<std::mutex> lk(mu);
+                if (!err) err = std::current_exception();
+            }
+        });
+    }
+    for (std::thread& x : th) x.join();
+    if (err) std::rethrow_exception(err);
+}
+
 // fn(tid, lo, hi): tid нужен вызывающему для приватных буферов потока.
 template <typename F>
 void parallelChunks(std::size_t n, int jobs, F fn) {
@@ -140,14 +170,27 @@ int runCubeColourise(const CubeOptions& o) {
     std::printf("[photos] %zu t=[%.3f, %.3f]\n", ph.size(), ph.front().t, ph.back().t);
 
     // ── Карта: LAS с gps_time ──────────────────────────────────────────────
-    LasRaw las;
-    loadLasRaw(o.cloud_path, las);
-    if (!las.hasTime())
-        throw std::runtime_error("cube mode needs a LAS with gps_time "
-                                 "(point format 1/3/4/5/6..10): " + o.cloud_path);
-    const std::size_t n = las.n();
+    // Файл читается потоково дважды (счёт кубов, затем упаковка): «сырые»
+    // массивы на всю карту в памяти не держатся.
+    const double cs = o.cube_size;
+    if (!(cs > 0.0)) throw std::runtime_error("--cube must be > 0");
+    LasMeta meta;
+    std::unordered_map<uint64_t, uint32_t> count;
+    streamLasRaw(o.cloud_path, meta,
+        [&](std::size_t idx0, std::size_t c, const int32_t* Xc, const int32_t* Yc,
+            const int32_t* Zc, const uint16_t*, const double*) {
+            if (!meta.has_time)
+                throw std::runtime_error(
+                    "cube mode needs a LAS with gps_time (point format "
+                    "1/3/4/5/6..10): " + o.cloud_path);
+            if (idx0 == 0) count.reserve(meta.n / 8 + 16);
+            for (std::size_t k = 0; k < c; ++k)
+                ++count[cubeKey(meta.sx * Xc[k] + meta.ox, meta.sy * Yc[k] + meta.oy,
+                                meta.sz * Zc[k] + meta.oz, cs)];
+        });
+    const std::size_t n = meta.n;
     std::printf("[cloud] %s points, LAS fmt %d, gps_time present\n",
-                withCommas(static_cast<long long>(n)).c_str(), las.fmt);
+                withCommas(static_cast<long long>(n)).c_str(), meta.fmt);
 
     const int njobs = o.jobs > 0
         ? o.jobs
@@ -179,14 +222,8 @@ int runCubeColourise(const CubeOptions& o) {
         throw std::runtime_error("no photo has a pose inside the trajectory span");
 
     // ── Пространственный индекс: кубы cube_size, CSR ──────────────────────
-    const double cs = o.cube_size;
-    if (!(cs > 0.0)) throw std::runtime_error("--cube must be > 0");
-    const auto t_idx = std::chrono::steady_clock::now();
-    std::unordered_map<uint64_t, uint32_t> count;
-    count.reserve(n / 4 + 16);
-    for (std::size_t i = 0; i < n; ++i)
-        ++count[cubeKey(las.x(i), las.y(i), las.z(i), cs)];
 
+    const auto t_idx = std::chrono::steady_clock::now();
     std::vector<uint64_t> keys;
     keys.reserve(count.size());
     for (const auto& kv : count) keys.push_back(kv.first);
@@ -200,14 +237,31 @@ int runCubeColourise(const CubeOptions& o) {
     std::vector<uint64_t> start(ncubes + 1, 0);
     for (std::size_t i = 0; i < ncubes; ++i)
         start[i + 1] = start[i] + count[keys[i]];
-    std::vector<uint32_t> order(n);                 // точки, сгруппированные по кубам
-    {
+    // Точки упаковываются в порядке кубов: обход куба становится последовательным
+    // (одна запись 24 Б вместо обращений к пяти массивам). Память под исходные
+    // массивы освобождается сразу после упаковки.
+    std::vector<LasPacked> pts(n);
+{
         std::vector<uint64_t> cur(start.begin(), start.end() - 1);
-        for (std::size_t i = 0; i < n; ++i) {
-            const uint64_t k = cubeKey(las.x(i), las.y(i), las.z(i), cs);
-            order[cur[cid[k]]++] = static_cast<uint32_t>(i);
-        }
+        LasMeta meta2;
+        streamLasRaw(o.cloud_path, meta2,
+            [&](std::size_t, std::size_t c, const int32_t* Xc, const int32_t* Yc,
+                const int32_t* Zc, const uint16_t* ic, const double* tc) {
+                for (std::size_t k = 0; k < c; ++k) {
+                    const uint64_t key = cubeKey(meta.sx * Xc[k] + meta.ox,
+                                                 meta.sy * Yc[k] + meta.oy,
+                                                 meta.sz * Zc[k] + meta.oz, cs);
+                    LasPacked& q = pts[cur[cid[key]]++];
+                    q.t         = tc ? tc[k] : 0.0;
+                    q.X         = Xc[k];
+                    q.Y         = Yc[k];
+                    q.Z         = Zc[k];
+                    q.intensity = ic[k];
+                }
+            });
     }
+    const double sx = meta.sx, sy = meta.sy, sz = meta.sz;
+    const double ox = meta.ox, oy = meta.oy, oz = meta.oz;
     std::vector<Eigen::Vector3d> centres(ncubes);
     for (std::size_t i = 0; i < ncubes; ++i) {
         int64_t ix, iy, iz;
@@ -278,13 +332,13 @@ int runCubeColourise(const CubeOptions& o) {
         if (o.occlusion) {
             for (auto& g : grid_thread)
                 std::fill(g.begin(), g.end(), std::numeric_limits<float>::infinity());
-            parallelChunks(seen.size(), njobs, [&](int tid, std::size_t lo, std::size_t hi) {
+            parallelDynamic(seen.size(), njobs, 64, [&](int tid, std::size_t lo, std::size_t hi) {
                 std::vector<float>& g = grid_thread[static_cast<std::size_t>(tid)];
                 for (std::size_t k = lo; k < hi; ++k) {
                     const uint32_t ci = seen[k];
                     for (uint32_t j = start[ci]; j < start[ci + 1]; ++j) {
-                        const uint32_t i = order[j];
-                        const Eigen::Vector3d pw(las.x(i), las.y(i), las.z(i));
+                        const LasPacked& q = pts[j];
+                        const Eigen::Vector3d pw(sx * q.X + ox, sy * q.Y + oy, sz * q.Z + oz);
                         const Eigen::Vector3d pc = fr.Tcw.block<3, 3>(0, 0) * pw +
                                                    fr.Tcw.block<3, 1>(0, 3);
                         if (!(pc.z() > 1e-6)) continue;
@@ -312,17 +366,16 @@ int runCubeColourise(const CubeOptions& o) {
 
         // (c) скоринг: цвет от кадра с минимальным баллом, без усреднения
         std::atomic<long long> updates{0};
-        parallelChunks(seen.size(), njobs, [&](int, std::size_t lo, std::size_t hi) {
+        parallelDynamic(seen.size(), njobs, 64, [&](int, std::size_t lo, std::size_t hi) {
             long long local = 0;
             for (std::size_t k = lo; k < hi; ++k) {
                 const uint32_t ci = seen[k];
                 for (uint32_t j = start[ci]; j < start[ci + 1]; ++j) {
-                    const uint32_t i = order[j];
-                    const double tp = las.time[i];
-                    const double dt = std::fabs(fr.t - tp);
+                    const LasPacked& q = pts[j];
+                    const double dt = std::fabs(fr.t - q.t);
                     const double term_t = o.score_w_time * dt / o.score_t_ref;
-                    if (term_t >= best[i]) continue;              // раннее отсечение
-                    const Eigen::Vector3d pw(las.x(i), las.y(i), las.z(i));
+                    if (term_t >= best[j]) continue;              // раннее отсечение
+                    const Eigen::Vector3d pw(sx * q.X + ox, sy * q.Y + oy, sz * q.Z + oz);
                     const Eigen::Vector3d pc = fr.Tcw.block<3, 3>(0, 0) * pw +
                                                fr.Tcw.block<3, 1>(0, 3);
                     if (!(pc.z() > 1e-6)) continue;
@@ -343,8 +396,8 @@ int runCubeColourise(const CubeOptions& o) {
                     }
                     const double score = term_t +
                         o.score_w_dist * std::min(1.0, d3 / o.score_d_ref);
-                    if (score < best[i]) {
-                        best[i] = static_cast<float>(score);
+                    if (score < best[j]) {
+                        best[j] = static_cast<float>(score);
                         const int su = static_cast<int>(std::nearbyint(
                             static_cast<double>(iu) * img.cols / cam.width));
                         const int sv = static_cast<int>(std::nearbyint(
@@ -352,10 +405,10 @@ int runCubeColourise(const CubeOptions& o) {
                         const int cu = std::max(0, std::min(su, img.cols - 1));
                         const int cv = std::max(0, std::min(sv, img.rows - 1));
                         const cv::Vec3b bgr = img.at<cv::Vec3b>(cv, cu);
-                        out[i] = (static_cast<uint32_t>(bgr[2]) << 16) |
+                        out[j] = (static_cast<uint32_t>(bgr[2]) << 16) |
                                  (static_cast<uint32_t>(bgr[1]) << 8) |
                                  static_cast<uint32_t>(bgr[0]);
-                        if (!has[i]) { has[i] = 1; ++uniq; }
+                        if (!has[j]) { has[j] = 1; ++uniq; }
                         ++local;
                     }
                 }
@@ -386,7 +439,7 @@ int runCubeColourise(const CubeOptions& o) {
         std::vector<char> keep(n, 0);
         for (std::size_t i = 0; i < n; ++i)
             keep[i] = (o.keep_uncolored || has[i]) ? 1 : 0;
-        saveLas7(o.output_path, las, order, keep, out);
+        saveLasPacked7(o.output_path, pts, keep, out, sx, sy, sz, ox, oy, oz);
         std::printf("  wrote %s (LAS 1.4 fmt 7, RGB + gps_time, %s points)\n",
                     o.output_path.c_str(),
                     withCommas(o.keep_uncolored ? static_cast<long long>(n) : coloured).c_str());

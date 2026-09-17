@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <functional>
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
@@ -848,7 +849,7 @@ void saveCloud(const std::string& path, const Cloud& cloud,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// LAS with timestamps (LasRaw, cube colourisation mode)
+// LAS with timestamps (streamLasRaw/LasPacked, cube colourisation mode)
 // ─────────────────────────────────────────────────────────────────────────────
 static void wrU16(unsigned char* p, uint32_t v) {
     p[0] = static_cast<unsigned char>(v & 0xFF);
@@ -880,7 +881,11 @@ static int lasTimeOffset(int fmt) {
     return (fmt >= 6) ? 22 : 20;
 }
 
-void loadLasRaw(const std::string& path, LasRaw& las) {
+std::size_t streamLasRaw(
+    const std::string& path, LasMeta& meta,
+    const std::function<void(std::size_t, std::size_t, const int32_t*, const int32_t*,
+                             const int32_t*, const uint16_t*, const double*)>& cb,
+    std::size_t chunk_records) {
     std::ifstream f(path, std::ios::binary);
     if (!f.is_open()) throw std::runtime_error("cannot open cloud: " + path);
     unsigned char h[375];
@@ -915,76 +920,58 @@ void loadLasRaw(const std::string& path, LasRaw& las) {
     }
     if (npts <= 0) throw std::runtime_error("LAS header reports no points: " + path);
 
-    las.fmt     = fmt;
-    las.rec_len = static_cast<int>(rec_len);
-    las.sx = rdF64(h + 131); las.sy = rdF64(h + 139); las.sz = rdF64(h + 147);
-    las.ox = rdF64(h + 155); las.oy = rdF64(h + 163); las.oz = rdF64(h + 171);
-
-    const std::size_t n = static_cast<std::size_t>(npts);
-    las.X.resize(n);
-    las.Y.resize(n);
-    las.Z.resize(n);
-    las.intensity.resize(n);
     const int t_off = lasTimeOffset(fmt);
-    las.time.clear();
-    if (t_off > 0 && rec_len >= t_off + 8) las.time.resize(n);
+    meta.fmt     = fmt;
+    meta.rec_len = static_cast<int>(rec_len);
+    meta.n       = static_cast<std::size_t>(npts);
+    meta.sx = rdF64(h + 131); meta.sy = rdF64(h + 139); meta.sz = rdF64(h + 147);
+    meta.ox = rdF64(h + 155); meta.oy = rdF64(h + 163); meta.oz = rdF64(h + 171);
+    meta.has_time = (t_off > 0 && rec_len >= t_off + 8);
 
     f.clear();
     f.seekg(static_cast<std::streamoff>(pts_off));
-    const long long chunk = 1 << 20;
-    std::vector<unsigned char> buf(static_cast<std::size_t>(rec_len) *
-                                   static_cast<std::size_t>(chunk));
-    long long done = 0;
-    while (done < npts) {
-        const long long want = std::min<long long>(chunk, npts - done);
+    const std::size_t chunk = std::max<std::size_t>(1, chunk_records);
+    std::vector<unsigned char> buf(chunk * static_cast<std::size_t>(rec_len));
+    std::vector<int32_t>  X(chunk), Y(chunk), Z(chunk);
+    std::vector<uint16_t> inten(chunk);
+    std::vector<double>   times(meta.has_time ? chunk : 1);
+
+    std::size_t done = 0;
+    while (done < meta.n) {
+        const std::size_t want = std::min(chunk, meta.n - done);
         f.read(reinterpret_cast<char*>(buf.data()),
-               static_cast<std::streamsize>(rec_len) * want);
-        const long long have = static_cast<long long>(f.gcount()) / rec_len;
-        if (have <= 0)
+               static_cast<std::streamsize>(rec_len) * static_cast<std::streamsize>(want));
+        const std::size_t have = static_cast<std::size_t>(f.gcount()) /
+                                 static_cast<std::size_t>(rec_len);
+        if (have == 0)
             throw std::runtime_error("truncated LAS point data: " + path);
         const unsigned char* q = buf.data();
-        for (long long k = 0; k < have; ++k, q += rec_len) {
-            const std::size_t i = static_cast<std::size_t>(done + k);
-            las.X[i] = rdI32(q + 0);
-            las.Y[i] = rdI32(q + 4);
-            las.Z[i] = rdI32(q + 8);
-            las.intensity[i] = static_cast<uint16_t>(rdU16(q + 12));
-            if (!las.time.empty()) las.time[i] = rdF64(q + t_off);
+        for (std::size_t k = 0; k < have; ++k, q += rec_len) {
+            X[k]     = rdI32(q + 0);
+            Y[k]     = rdI32(q + 4);
+            Z[k]     = rdI32(q + 8);
+            inten[k] = static_cast<uint16_t>(rdU16(q + 12));
+            if (meta.has_time) times[k] = rdF64(q + t_off);
         }
+        cb(done, have, X.data(), Y.data(), Z.data(), inten.data(),
+           meta.has_time ? times.data() : nullptr);
         done += have;
     }
+    return done;
 }
 
-void saveLas7(const std::string& path, const LasRaw& las,
-              const std::vector<uint32_t>& order, const std::vector<char>& keep,
-              const std::vector<uint32_t>& rgb) {
-    std::vector<int> sel;
-    sel.reserve(order.size());
-    for (uint32_t i : order)
-        if (keep[static_cast<std::size_t>(i)]) sel.push_back(static_cast<int>(i));
-    const std::size_t n = sel.size();
-
-    int32_t bx[6] = { 0, 0, 0, 0, 0, 0 };
-    if (n > 0) {
-        const int first = sel.front();
-        bx[0] = bx[1] = las.X[static_cast<std::size_t>(first)];
-        bx[2] = bx[3] = las.Y[static_cast<std::size_t>(first)];
-        bx[4] = bx[5] = las.Z[static_cast<std::size_t>(first)];
-        for (int i : sel) {
-            bx[0] = std::min(bx[0], las.X[static_cast<std::size_t>(i)]);
-            bx[1] = std::max(bx[1], las.X[static_cast<std::size_t>(i)]);
-            bx[2] = std::min(bx[2], las.Y[static_cast<std::size_t>(i)]);
-            bx[3] = std::max(bx[3], las.Y[static_cast<std::size_t>(i)]);
-            bx[4] = std::min(bx[4], las.Z[static_cast<std::size_t>(i)]);
-            bx[5] = std::max(bx[5], las.Z[static_cast<std::size_t>(i)]);
-        }
-    }
-
-    // LAS 1.4 public header block (375 bytes), point format 7 (RGB + gps_time).
+// Общая часть записи LAS 1.4 fmt 7: заголовок + поток записей по 36 Б.
+static void writeLas7Stream(const std::string& path, std::size_t n,
+                            const int32_t* mnX, const int32_t* mxX,
+                            const int32_t* mnY, const int32_t* mxY,
+                            const int32_t* mnZ, const int32_t* mxZ,
+                            double sx, double sy, double sz,
+                            double ox, double oy, double oz,
+                            const std::function<const unsigned char*(std::size_t)>& emit) {
     std::vector<unsigned char> hdr(375, 0);
     std::memcpy(hdr.data(), "LASF", 4);
-    hdr[24] = 1;                                     // version major
-    hdr[25] = 4;                                     // version minor
+    hdr[24] = 1;
+    hdr[25] = 4;
     const std::string sysid = "PointCloudColorising";
     const std::string gensw = "colorise_map (cube mode)";
     for (std::size_t i = 0; i < sysid.size() && i < 32; ++i) hdr[26 + i] = (unsigned char)sysid[i];
@@ -994,63 +981,86 @@ void saveLas7(const std::string& path, const LasRaw& las,
         wrU16(hdr.data() + 90, static_cast<uint32_t>(tm->tm_yday + 1));
         wrU16(hdr.data() + 92, static_cast<uint32_t>(tm->tm_year + 1900));
     }
-    wrU16(hdr.data() + 94, 375);                     // header size
-    wrU32(hdr.data() + 96, 375);                     // offset to point data
-    wrU32(hdr.data() + 100, 0);                      // number of VLRs
-    hdr[104] = 7;                                    // point data format 7
-    wrU16(hdr.data() + 105, 36);                     // record length
+    wrU16(hdr.data() + 94, 375);
+    wrU32(hdr.data() + 96, 375);
+    wrU32(hdr.data() + 100, 0);
+    hdr[104] = 7;
+    wrU16(hdr.data() + 105, 36);
     const uint32_t legacy = (n <= 0xFFFFFFFFu) ? static_cast<uint32_t>(n) : 0u;
-    wrU32(hdr.data() + 107, legacy);                 // legacy point count
-    wrU32(hdr.data() + 111, legacy);                 // legacy points by return 1
-    wrF64(hdr.data() + 131, las.sx); wrF64(hdr.data() + 139, las.sy); wrF64(hdr.data() + 147, las.sz);
-    wrF64(hdr.data() + 155, las.ox); wrF64(hdr.data() + 163, las.oy); wrF64(hdr.data() + 171, las.oz);
-    // Header bbox: the quantised data bbox, exactly like the LAS 1.2 writer.
-    auto coord = [&](int32_t v, int a) {
-        const double s = (a == 0) ? las.sx : (a == 1) ? las.sy : las.sz;
-        const double o = (a == 0) ? las.ox : (a == 1) ? las.oy : las.oz;
-        return s * static_cast<double>(v) + o;
-    };
-    wrF64(hdr.data() + 179, coord(bx[1], 0)); wrF64(hdr.data() + 187, coord(bx[0], 0));
-    wrF64(hdr.data() + 195, coord(bx[3], 1)); wrF64(hdr.data() + 203, coord(bx[2], 1));
-    wrF64(hdr.data() + 211, coord(bx[5], 2)); wrF64(hdr.data() + 219, coord(bx[4], 2));
-    wrU64(hdr.data() + 227, 0);                      // waveform data start
-    wrU64(hdr.data() + 235, 0);                      // first EVLR
-    wrU32(hdr.data() + 243, 0);                      // number of EVLRs
-    {
-        uint64_t bits = static_cast<uint64_t>(n);
-        for (int i = 0; i < 8; ++i)
-            hdr[247 + i] = static_cast<unsigned char>((bits >> (8 * i)) & 0xFF);
+    wrU32(hdr.data() + 107, legacy);
+    wrU32(hdr.data() + 111, legacy);
+    wrF64(hdr.data() + 131, sx); wrF64(hdr.data() + 139, sy); wrF64(hdr.data() + 147, sz);
+    wrF64(hdr.data() + 155, ox); wrF64(hdr.data() + 163, oy); wrF64(hdr.data() + 171, oz);
+    wrF64(hdr.data() + 179, sx * static_cast<double>(*mxX) + ox);
+    wrF64(hdr.data() + 187, sx * static_cast<double>(*mnX) + ox);
+    wrF64(hdr.data() + 195, sy * static_cast<double>(*mxY) + oy);
+    wrF64(hdr.data() + 203, sy * static_cast<double>(*mnY) + oy);
+    wrF64(hdr.data() + 211, sz * static_cast<double>(*mxZ) + oz);
+    wrF64(hdr.data() + 219, sz * static_cast<double>(*mnZ) + oz);
+    wrU64(hdr.data() + 227, 0);
+    wrU64(hdr.data() + 235, 0);
+    wrU32(hdr.data() + 243, 0);
+    const uint64_t nn = static_cast<uint64_t>(n);
+    for (int i = 0; i < 8; ++i) {
+        const unsigned char b = static_cast<unsigned char>((nn >> (8 * i)) & 0xFF);
+        hdr[247 + i] = b;
+        hdr[255 + i] = b;
     }
-    for (int i = 0; i < 8; ++i) hdr[255 + i] = hdr[247 + i];   // points by return 1
-
     std::ofstream f(path, std::ios::binary);
     if (!f.is_open()) throw std::runtime_error("cannot write output: " + path);
     f.write(reinterpret_cast<const char*>(hdr.data()),
             static_cast<std::streamsize>(hdr.size()));
+    for (std::size_t k = 0; k < n; ++k) {
+        const unsigned char* rec = emit(k);
+        f.write(reinterpret_cast<const char*>(rec), 36);
+        if (!f) throw std::runtime_error("cannot write output (disk full?): " + path);
+    }
+}
 
-    const std::size_t rec = 36;
-    std::vector<unsigned char> buf(rec);
-    for (int i : sel) {
-        const std::size_t k = static_cast<std::size_t>(i);
-        wrU32(buf.data() + 0, static_cast<uint32_t>(las.X[k]));
-        wrU32(buf.data() + 4, static_cast<uint32_t>(las.Y[k]));
-        wrU32(buf.data() + 8, static_cast<uint32_t>(las.Z[k]));
-        wrU16(buf.data() + 12, las.intensity[k]);
-        wrU16(buf.data() + 14, 0x11);                // return 1 of 1
-        buf[16] = 0;                                 // classification
-        buf[17] = 0;                                 // user data
-        wrU16(buf.data() + 18, 0);                   // scan angle
-        wrU16(buf.data() + 20, 0);                   // point source id
-        wrF64(buf.data() + 22, las.time.empty() ? 0.0 : las.time[k]);
+void saveLasPacked7(const std::string& path, const std::vector<LasPacked>& pts,
+                    const std::vector<char>& keep, const std::vector<uint32_t>& rgb,
+                    double sx, double sy, double sz,
+                    double ox, double oy, double oz) {
+    // Без массива индексов: два прохода по keep/pts (bbox, затем запись) экономят
+    // ~450 МБ на 56 млн точек.
+    std::size_t kept = 0;
+    int32_t mnX = 0, mxX = 0, mnY = 0, mxY = 0, mnZ = 0, mxZ = 0;
+    bool first = true;
+    for (std::size_t k = 0; k < pts.size(); ++k) {
+        if (!keep[k]) continue;
+        const LasPacked& q = pts[k];
+        if (first) { mnX = mxX = q.X; mnY = mxY = q.Y; mnZ = mxZ = q.Z; first = false; }
+        else {
+            mnX = std::min(mnX, q.X); mxX = std::max(mxX, q.X);
+            mnY = std::min(mnY, q.Y); mxY = std::max(mxY, q.Y);
+            mnZ = std::min(mnZ, q.Z); mxZ = std::max(mxZ, q.Z);
+        }
+        ++kept;
+    }
+    std::vector<unsigned char> buf(36);
+    std::size_t pos = 0;
+    writeLas7Stream(path, kept, &mnX, &mxX, &mnY, &mxY, &mnZ, &mxZ,
+                    sx, sy, sz, ox, oy, oz,
+                    [&](std::size_t) -> const unsigned char* {
+        while (!keep[pos]) ++pos;              // пропускаем неокрашенные (keep == 0)
+        const std::size_t k = pos++;
+        const LasPacked& q = pts[k];
+        wrU32(buf.data() + 0, static_cast<uint32_t>(q.X));
+        wrU32(buf.data() + 4, static_cast<uint32_t>(q.Y));
+        wrU32(buf.data() + 8, static_cast<uint32_t>(q.Z));
+        wrU16(buf.data() + 12, q.intensity);
+        wrU16(buf.data() + 14, 0x11);
+        buf[16] = 0; buf[17] = 0;
+        wrU16(buf.data() + 18, 0);
+        wrU16(buf.data() + 20, 0);
+        wrF64(buf.data() + 22, q.t);
         const uint32_t c = rgb[k];
         const uint32_t r = (c >> 16) & 0xFF, g = (c >> 8) & 0xFF, b = c & 0xFF;
-        // RGB занимает байты 30..35 (после gps_time): 8 бит -> 16 бит (x257)
         wrU16(buf.data() + 30, (r << 8) | r);
         wrU16(buf.data() + 32, (g << 8) | g);
         wrU16(buf.data() + 34, (b << 8) | b);
-        f.write(reinterpret_cast<const char*>(buf.data()),
-                static_cast<std::streamsize>(rec));
-    }
+        return buf.data();
+    });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
