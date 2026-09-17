@@ -95,6 +95,7 @@ struct MapOptions {
     std::string euler_units         = "auto";
     std::string extrinsic_name;
     std::string extrinsic_direction;
+    bool        nearest_wins        = false;  // colour from the nearest camera only
     int         jobs                = 0;      // 0 = all cores
 };
 
@@ -126,6 +127,7 @@ static void printUsage() {
         "  --occlusion-cell <px>       z-buffer cell                 [4.0]\n"
         "  --occlusion-depth-tol <m>   z-buffer tolerance            [0.3]\n"
         "  --keep-uncolored            write uncoloured points as black\n"
+        "  --nearest-wins              colour each point only from the nearest camera\n"
         "  --extrinsic-name <key>      exact/suffix key in calib.json\n"
         "  --extrinsic-direction {camera_from_lidar|lidar_from_camera}\n"
         "  --euler-order {xyz|zyx}     Euler rotation order          [xyz]\n"
@@ -214,6 +216,7 @@ static bool parseArgs(int argc, char** argv, MapOptions& o) {
         else if (key == "--occlusion-depth-tol")
             o.occlusion_depth_tol = parseDoubleValue(value(key).c_str(), key);
         else if (key == "--keep-uncolored") o.keep_uncolored = true;
+        else if (key == "--nearest-wins") o.nearest_wins = true;
 
         else if (key == "--extrinsic-name") o.extrinsic_name = value(key);
         else if (key == "--extrinsic-direction") {
@@ -338,6 +341,7 @@ struct FrameResult {
     std::size_t           cand_count = 0;     // candidates, summed over cameras
     std::vector<uint32_t> rgb;
     std::vector<int>      idx;
+    std::vector<double>   dist;   // camera-to-point, for --nearest-wins
     std::string           message;
 };
 
@@ -501,6 +505,8 @@ static int run(const MapOptions& o) {
     std::vector<int32_t>  ccnt(n, 0);
     std::vector<uint32_t> out(n, 0);
     std::vector<char>     has(n, 0);
+    // --nearest-wins: distance of the camera that coloured each point so far.
+    std::vector<double>   best(n, std::numeric_limits<double>::infinity());
     long long uniq_so_far = 0;
     long long max_obs     = 0;
 
@@ -533,6 +539,19 @@ static int run(const MapOptions& o) {
             for (std::size_t q = 0; q < res.idx.size(); ++q) {
                 const int      i = res.idx[q];
                 const uint32_t p = res.rgb[q];
+                if (o.nearest_wins) {
+                    // keep the observation from the nearest camera; strict '<'
+                    // makes the result independent of the frame order/threads
+                    if (ccnt[i] == 0) ++uniq_so_far;
+                    ccnt[i] += 1;
+                    if (ccnt[i] > max_obs) max_obs = ccnt[i];
+                    if (res.dist[q] < best[i]) {
+                        has[i] = 1;              // provisional; recount at the end
+                        out[i] = p;
+                        best[i] = res.dist[q];
+                    }
+                    continue;
+                }
                 csum[3 * i + 0] += (p >> 16) & 0xFF;
                 csum[3 * i + 1] += (p >> 8) & 0xFF;
                 csum[3 * i + 2] += p & 0xFF;
@@ -597,12 +616,14 @@ auto worker = [&]() {
 
                     std::vector<uint32_t> rgb;
                     std::vector<int>      idx;
+                    std::vector<double>   dist;
                     projectAndSample(cloud, cand_ref, img, cams[c], Tc,
                                      o.edge_margin, o.max_view_angle_deg, o.min_camera_dist,
                                      o.occlusion, o.occlusion_cell_px, o.occlusion_depth_tol,
-                                     rgb, idx);
+                                     rgb, idx, dist);
                     res.rgb.insert(res.rgb.end(), rgb.begin(), rgb.end());
                     res.idx.insert(res.idx.end(), idx.begin(), idx.end());
+                    res.dist.insert(res.dist.end(), dist.begin(), dist.end());
                 }
 
                 if (pose_missing == ncam)                 res.status = FrameResult::OUT_OF_SPAN;
@@ -614,6 +635,7 @@ auto worker = [&]() {
                 res.message = e.what();
                 res.idx.clear();
                 res.rgb.clear();
+                res.dist.clear();
             }
 
             // Commit in frame order: wait until the queue reaches this frame.
@@ -638,6 +660,12 @@ auto worker = [&]() {
     // Finalise: average the observations; a point is kept when at least
     // min_color_frames frames saw it (node: buildColouredCloud).
     for (std::size_t i = 0; i < n; ++i) {
+        if (o.nearest_wins) {
+            // Recompute from the observation count (commit marked has[]
+            // provisionally on the first sight of the point).
+            has[i] = (ccnt[i] >= o.min_color_frames) ? 1 : 0;
+            continue;                       // out already holds the nearest colour
+        }
         if (ccnt[i] < o.min_color_frames) continue;
         has[i] = 1;
         const double r = csum[3 * i + 0] / ccnt[i];

@@ -1,0 +1,31 @@
+iteration: ITER-20260917-150712
+date: 2026-09-17
+time: 15:07:12
+status: completed
+user_request: >
+  Самый правильный способ — окрашивать каждую точку только одним изображением,
+  но ближайшим к ней. Уточнено: «ближайшее» = минимальная дистанция камера→точка
+  среди кадров, где точка видима.
+approach: >
+  Флаг --nearest-wins (взаимоисключается с --first-wins). projectAndSample /
+  project_and_sample возвращают дистанцию камера→точка принятых наблюдений;
+  в накопителях появился best_dist — цвет перезаписывается строго меньшей
+  дистанцией. Синхронизированы colorise_offline.py, colorise/ (C++),
+  ColoriseMap/ (C++). --min-color-frames — порог на число наблюдений как раньше.
+files:
+  - colorise_offline.py
+  - colorise/include/colorise.h
+  - colorise/src/project.cpp
+  - colorise/src/main.cpp
+  - ColoriseMap/src/main.cpp
+  - colorise/README.md
+  - colorise_offline_README.md
+  - ColoriseMap/README.md
+  - CHANGELOG.md
+validation: >
+  Регресс average/first-wins побайтово = baseline; nearest-wins: py=cpp=map
+  побайтово (md5 9c9d0454); --jobs 1 = авто у обоих бинарников; негатив
+  --first-wins + --nearest-wins — отказ; независимая семантика 3000 точек
+  (5/1633 на границе кадра — артефакт проверки).
+notes: >
+  Дефолт (усреднение) не изменён — старые прогоны воспроизводимы.

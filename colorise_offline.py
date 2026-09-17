@@ -269,7 +269,8 @@ def unpack_rgb(p):
     p=np.asarray(p,np.uint32); return np.stack([(p>>16)&255,(p>>8)&255,p&255],axis=1)
 
 def project_and_sample(P,idx,img,K,dist,model,cam_w,cam_h,T_cam_from_pts,edge_margin=0.0,max_view_angle_deg=180.0,min_camera_dist=0.0,occlusion=True,occl_cell=4.0,occl_tol=0.3):
-    if idx is None or len(idx)==0 or img is None: return np.zeros(0,np.uint32),np.zeros(0,np.int64)
+    if idx is None or len(idx)==0 or img is None:
+        return np.zeros(0,np.uint32),np.zeros(0,np.int64),np.zeros(0,np.float64)
     H,W=img.shape[:2]
     R=T_cam_from_pts[:3,:3]; t=T_cam_from_pts[:3,3]
     Pc=P[idx]@R.T+t; z=Pc[:,2]; d3=np.linalg.norm(Pc,axis=1)
@@ -277,7 +278,7 @@ def project_and_sample(P,idx,img,K,dist,model,cam_w,cam_h,T_cam_from_pts,edge_ma
     if min_camera_dist>0: ok&=d3>=min_camera_dist
     if max_view_angle_deg<180.0: ok&=(z/d3)>=np.cos(math.radians(max_view_angle_deg))
     ii=idx[ok]; pc=Pc[ok]
-    if pc.shape[0]==0: return np.zeros(0,np.uint32),np.zeros(0,np.int64)
+    if pc.shape[0]==0: return np.zeros(0,np.uint32),np.zeros(0,np.int64),np.zeros(0,np.float64)
     rv=np.zeros((3,1)); tv=np.zeros((3,1))
     if model=="fisheye" and hasattr(cv2,"fisheye"):
         _r=cv2.fisheye.projectPoints(pc.astype(np.float32),rv,tv,K,dist); P2=np.asarray(_r[0] if isinstance(_r,tuple) else _r).reshape(-1,2)
@@ -290,18 +291,21 @@ def project_and_sample(P,idx,img,K,dist,model,cam_w,cam_h,T_cam_from_pts,edge_ma
     m=int(round(edge_margin))
     inside=fin&(u>=m)&(u<cam_w-m)&(v>=m)&(v<cam_h-m)
     ii,pc,u,v,depth=ii[inside],pc[inside],u[inside],v[inside],pc[inside,2]
-    if pc.shape[0]==0: return np.zeros(0,np.uint32),np.zeros(0,np.int64)
+    dnorm=np.linalg.norm(pc,axis=1)   # camera-to-point distance, for --nearest-wins
+    if pc.shape[0]==0:
+        return np.zeros(0,np.uint32),np.zeros(0,np.int64),np.zeros(0,np.float64)
     if occlusion:
         cell=max(1.0,occl_cell); gx=(u/cell).astype(np.int64); gy=(v/cell).astype(np.int64)
         gw=int(math.ceil(cam_w/cell)); zmin=np.full(int(math.ceil(cam_h/cell))*gw,np.inf)
         np.minimum.at(zmin,gy*gw+gx,depth.astype(np.float64))
-        keep=depth<=(zmin[gy*gw+gx]+occl_tol); ii,u,v=ii[keep],u[keep],v[keep]
-        if ii.shape[0]==0: return np.zeros(0,np.uint32),np.zeros(0,np.int64)
+        keep=depth<=(zmin[gy*gw+gx]+occl_tol); ii,u,v,dnorm=ii[keep],u[keep],v[keep],dnorm[keep]
+        if ii.shape[0]==0:
+            return np.zeros(0,np.uint32),np.zeros(0,np.int64),np.zeros(0,np.float64)
     if W!=cam_w or H!=cam_h:
         u=np.clip((u*(W/cam_w)).astype(np.int64),0,W-1); v=np.clip((v*(H/cam_h)).astype(np.int64),0,H-1)
     else:
         u=np.clip(u,0,W-1); v=np.clip(v,0,H-1)
-    px=img[v,u]; return pack_rgb(px[:,2],px[:,1],px[:,0]),ii
+    px=img[v,u]; return pack_rgb(px[:,2],px[:,1],px[:,0]),ii,dnorm
 
 def colourise(args):
     cam,cam_key=load_camera_from_calib(args.calib)
@@ -331,6 +335,7 @@ def colourise(args):
     cull=cKDTree(xyz) if (args.max_range>0 and cKDTree is not None) else None
     csum=np.zeros((n,3)); ccnt=np.zeros(n,np.int32)
     out=np.zeros(n,np.uint32); colored=np.zeros(n,bool)
+    best=np.full(n,np.inf)   # --nearest-wins: dist of the camera that coloured the point
     def maybe_T(pt,tol=0.0):
         # Anchor to the nearest endpoint pose when the photo is only slightly
         # outside the trajectory span (within tol); otherwise report 'no pose'.
@@ -353,7 +358,7 @@ def colourise(args):
             print("[frame {}] no points within {:.0f} m -> skipped".format(k,args.max_range)); continue
         img=cv2.imread(pfile,cv2.IMREAD_COLOR)
         if img is None: continue
-        rgb,ii=project_and_sample(xyz,cand,img,cam['K'],cam['dist'],cam['model'],cam['width'],cam['height'],Tc,
+        rgb,ii,dist=project_and_sample(xyz,cand,img,cam['K'],cam['dist'],cam['model'],cam['width'],cam['height'],Tc,
                 edge_margin=args.edge_margin,max_view_angle_deg=args.max_view_angle,min_camera_dist=args.min_camera_dist,
                 occlusion=args.occlusion,occl_cell=args.occlusion_cell,occl_tol=args.occlusion_depth_tol)
         if ii.size:
@@ -362,12 +367,21 @@ def colourise(args):
                 if m.any():
                     nz=ii[m]; px=unpack_rgb(rgb)[m]
                     out[nz]=pack_rgb(px[:,0],px[:,1],px[:,2]); colored[nz]=True
+            elif args.nearest_wins:
+                # keep the observation from the nearest camera; strict '<' makes
+                # the result independent of the frame order / threading
+                m=dist<best[ii]
+                if m.any():
+                    nz=ii[m]; out[nz]=rgb[m]; best[nz]=dist[m]; colored[nz]=True
+                ccnt[ii]+=1
             else:
                 px=unpack_rgb(rgb); np.add.at(csum,ii,px); ccnt[ii]+=1
-            uniq_so_far = int(colored.sum()) if args.first_wins else int((ccnt>0).sum())
+            uniq_so_far = int(colored.sum()) if (args.first_wins or args.nearest_wins) else int((ccnt>0).sum())
             print("[frame {}] t={:.3f} coloured={:,} cand={:,} uniq_so_far={:,}".format(k,pt,ii.size,cand.size,uniq_so_far))
     if args.first_wins:
         has=colored
+    elif args.nearest_wins:
+        has=ccnt>=args.min_color_frames   # out already holds the nearest-camera colour
     else:
         has=ccnt>=args.min_color_frames
         if has.any():
@@ -411,8 +425,11 @@ def main(argv=None):
     ap.add_argument("--min-color-frames",type=int,default=1)
     ap.add_argument("--keep-uncolored",action="store_true")
     ap.add_argument("--first-wins",action="store_true",help="keep the first colour a point receives instead of averaging across frames")
+    ap.add_argument("--nearest-wins",action="store_true",help="colour each point only from the nearest camera (min camera-to-point distance among frames where the point is visible)")
     ap.add_argument("--max-lidar-z",type=float,default=np.inf)
     args=ap.parse_args(argv)
+    if args.first_wins and args.nearest_wins:
+        raise SystemExit("--first-wins и --nearest-wins взаимоисключающие: выберите один режим")
     if args.output:
         import os as _os; _os.makedirs(_os.path.dirname(_os.path.abspath(args.output)),exist_ok=True)
     try:

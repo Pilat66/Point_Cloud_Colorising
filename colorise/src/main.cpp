@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <limits>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -82,6 +83,7 @@ static void printUsage() {
         "  --jobs <n>                worker threads (0 = all cores) [0]\n"
         "  --keep-uncolored          keep black points in output\n"
         "  --first-wins              keep first observed colour\n"
+        "  --nearest-wins            colour each point only from the nearest camera\n"
         "  --max-lidar-z <m>         height gate (inf=off)    [inf]\n"
         "  -h, --help                this message\n");
 }
@@ -177,8 +179,12 @@ static bool parseArgs(int argc, char** argv, Options& o) {
         else if (key == "--no-occlusion") o.occlusion = false;
         else if (key == "--keep-uncolored") o.keep_uncolored = true;
         else if (key == "--first-wins") o.first_wins = true;
+        else if (key == "--nearest-wins") o.nearest_wins = true;
         else throw std::runtime_error("unknown option: '" + key + "'");
     }
+    if (o.first_wins && o.nearest_wins)
+        throw std::runtime_error(
+            "--first-wins and --nearest-wins are mutually exclusive: pick one");
     return true;
 }
 // Per-frame result produced by a worker thread. Heavy work (cull + imread +
@@ -193,6 +199,7 @@ struct FrameResult {
     std::size_t cand_count = 0;
     std::vector<uint32_t> rgb;
     std::vector<int> idx;
+    std::vector<double> dist;      // camera-to-point, for --nearest-wins
     std::string message;
 };
 
@@ -297,6 +304,8 @@ static int run(const Options& o) {
     std::vector<uint32_t> out(n, 0);
     std::vector<char> colored(n, 0);
     std::vector<char> has(n, 0);
+    // --nearest-wins: distance of the camera that coloured each point so far.
+    std::vector<double> best(n, std::numeric_limits<double>::infinity());
     long long uniq_so_far = 0;
     long long max_obs = 0;
 
@@ -335,6 +344,20 @@ static int run(const Options& o) {
                         colored[i] = 1;
                         out[i] = res.rgb[q];
                         ++uniq_so_far;
+                    }
+                }
+            } else if (o.nearest_wins) {
+                // keep the observation from the nearest camera; strict '<' makes
+                // the result independent of the frame order / threading
+                for (std::size_t q = 0; q < res.idx.size(); ++q) {
+                    const int i = res.idx[q];
+                    if (ccnt[i] == 0) ++uniq_so_far;
+                    ccnt[i] += 1;
+                    if (ccnt[i] > max_obs) max_obs = ccnt[i];
+                    if (res.dist[q] < best[i]) {
+                        colored[i] = 1;
+                        out[i]     = res.rgb[q];
+                        best[i]    = res.dist[q];
                     }
                 }
             } else {
@@ -401,7 +424,7 @@ static int run(const Options& o) {
                                              o.min_camera_dist, o.occlusion,
                                              o.occlusion_cell_px,
                                              o.occlusion_depth_tol,
-                                             res.rgb, res.idx);
+                                             res.rgb, res.idx, res.dist);
                         }
                     }
                 }
@@ -436,6 +459,9 @@ static int run(const Options& o) {
     // Finalise: averaging across frames, or the first colour observed.
     if (o.first_wins) {
         has = colored;
+    } else if (o.nearest_wins) {
+        for (std::size_t i = 0; i < n; ++i)
+            if (ccnt[i] >= o.min_color_frames) has[i] = 1;  // out already holds it
     } else {
         for (std::size_t i = 0; i < n; ++i) {
             if (ccnt[i] >= o.min_color_frames) {

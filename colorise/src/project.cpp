@@ -13,9 +13,11 @@ void projectAndSample(const Cloud& cloud, const std::vector<int>& cand,
                       double edge_margin, double max_view_angle_deg,
                       double min_camera_dist, bool occlusion,
                       double occlusion_cell_px, double occlusion_depth_tol,
-                      std::vector<uint32_t>& out_rgb, std::vector<int>& out_idx) {
+                      std::vector<uint32_t>& out_rgb, std::vector<int>& out_idx,
+                      std::vector<double>& out_dist) {
     out_rgb.clear();
     out_idx.clear();
+    out_dist.clear();
 
     const int H = img.rows;
     const int W = img.cols;
@@ -28,9 +30,11 @@ void projectAndSample(const Cloud& cloud, const std::vector<int>& cand,
     std::vector<cv::Point3f> cam_pts;
     std::vector<int> cam_idx;
     std::vector<double> depth;                    // pc.z, doubles (Python float64)
+    std::vector<double> dists;                    // |pc| — camera-to-point distance
     cam_pts.reserve(cand.size());
     cam_idx.reserve(cand.size());
     depth.reserve(cand.size());
+    dists.reserve(cand.size());
 
     const double cos_view = (max_view_angle_deg < 180.0)
                                 ? std::cos(max_view_angle_deg * M_PI / 180.0)
@@ -50,6 +54,7 @@ void projectAndSample(const Cloud& cloud, const std::vector<int>& cand,
                              static_cast<float>(pc.z()));
         cam_idx.push_back(i);
         depth.push_back(z);
+        dists.push_back(d3);
     }
     if (cam_pts.empty()) return;
 
@@ -134,5 +139,6 @@ void projectAndSample(const Cloud& cloud, const std::vector<int>& cand,
                                 static_cast<uint32_t>(bgr[0]);
         out_rgb.push_back(packed);
         out_idx.push_back(cam_idx[k]);
+        out_dist.push_back(dists[k]);
     }
 }

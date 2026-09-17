@@ -36,6 +36,7 @@ struct Options {
     int    min_color_frames    = 1;
     bool   keep_uncolored      = false;
     bool   first_wins          = false;
+    bool   nearest_wins        = false;
     double max_lidar_z         = std::numeric_limits<double>::infinity();
     int    jobs                = 0;    // worker threads; 0 = hardware_concurrency
 };
@@ -138,8 +139,8 @@ double photoTimestampFromName(const std::string& stem);
 //   cv::projectPoints or cv::fisheye::projectPoints,
 //   edge-margin rectangle check, z-buffer occlusion, pixel scaling for
 //   mismatched image size.
-// Every accepted candidate yields one packed RGB (PCL convention) and its
-// index into `cloud`.
+// Every accepted candidate yields one packed RGB (PCL convention), its index
+// into `cloud`, and the camera-to-point distance (for --nearest-wins).
 // ─────────────────────────────────────────────────────────────────────────────
 void projectAndSample(const Cloud& cloud, const std::vector<int>& cand,
                       const cv::Mat& img, const CameraParams& cam,
@@ -147,4 +148,5 @@ void projectAndSample(const Cloud& cloud, const std::vector<int>& cand,
                       double edge_margin, double max_view_angle_deg,
                       double min_camera_dist, bool occlusion,
                       double occlusion_cell_px, double occlusion_depth_tol,
-                      std::vector<uint32_t>& out_rgb, std::vector<int>& out_idx);
+                      std::vector<uint32_t>& out_rgb, std::vector<int>& out_idx,
+                      std::vector<double>& out_dist);
