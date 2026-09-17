@@ -1,0 +1,20 @@
+iteration: ITER-20260917-142235
+date: 2026-09-17
+time: 14:22:35
+status: completed
+user_request: >
+  Memory bank ("Полезные наблюдения.md") перенести в директорию cline и в
+  clinerules.md добавить необходимость чтения его при запуске.
+approach: >
+  git mv "Полезные наблюдения.md" -> cline/ (история сохраняется); в шапку
+  clinerules.md добавлен блок "Memory bank" — читать при запуске вместе с
+  правилами, учитывать наблюдения, новые добавлять туда же.
+files:
+  - cline/Полезные наблюдения.md
+  - cline/clinerules.md
+  - CHANGELOG.md
+validation: >
+  Перемещение через git mv (rename зафиксирован), правка clinerules.md
+  выверена по точному фрагменту (assert), содержимое memory bank не менялось.
+notes: >
+  Код не затронут.
