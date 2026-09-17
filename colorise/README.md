@@ -24,7 +24,7 @@ min/max-бокс в заголовке; пустая выборка даёт в�
 | Библиотека | Для чего |
 |---|---|
 | Eigen3 ≥ 3.3 | 4×4-трансформы, кватернионы, SLERP |
-| OpenCV ≥ 4 | чтение фото, `cv::projectPoints` / `cv::fisheye::projectPoints` |
+| OpenCV ≥ 4 | чтение фото (и проекция fisheye/сложной дисторсии) |
 | nlohmann/json | vendored single-header в `third_party/nlohmann/` (не нужен в системе) |
 
 ```bash

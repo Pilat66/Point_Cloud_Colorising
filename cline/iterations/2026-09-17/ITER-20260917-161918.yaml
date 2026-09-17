@@ -1,0 +1,29 @@
+iteration: ITER-20260917-161918
+date: 2026-09-17
+time: 16:19:18
+status: completed
+user_request: >
+  Заняться реальными узкими местами: собственная векторная проекция pinhole
+  вместо cv::projectPoints.
+approach: >
+  project_pinhole() (Python, векторно) и projectPinhole() (C++, float64) для
+  radtan/plumb_bob с <=5 коэффициентами, одинаковый порядок операций; fisheye и
+  длинная дисторсия — OpenCV (та же логика отката в обоих языках). Pass 1 в C++
+  хранит точки как Eigen::Vector3d. Побочно исправлен краш Python-fisheye
+  (форма (N,1,3)).
+files:
+  - colorise_offline.py
+  - colorise/src/project.cpp
+  - colorise/README.md
+  - colorise_offline_README.md
+  - ColoriseMap/README.md
+  - CHANGELOG.md
+  - cline/Полезные наблюдения.md
+validation: >
+  Проекция в Python 514->25 мс (20x), wall 5.5-5.8 -> 5.0-5.1 с; C++ без
+  изменений. Точность vs OpenCV: max 0.0025 px, 6/72000 смен округления.
+  Паритет cmp: pinhole (average/first-wins/nearest-wins) py=cpp=map, fisheye
+  py=cpp, детерминизм jobs1=auto. Изменение выхода: 43/72455 (average).
+notes: >
+  Выходные байты слегка изменились (пользователь предупреждён в плане) —
+  паритет C++/Python сохранён. Тяжёлый прогон по карте не делался.

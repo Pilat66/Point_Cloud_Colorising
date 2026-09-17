@@ -23,6 +23,36 @@ static double fastSqrtApprox(double d2) {
     return static_cast<double>(f * y);
 }
 
+// Собственная векторная проекция pinhole (radtan/plumb_bob): x/z, дисторсия
+// k1,k2,p1,p2,k3, затем fx,fy,cx,cy. Арифметика и порядок операций совпадают с
+// project_pinhole() в colorise_offline.py — паритет C++/Python байт-в-байт.
+// Применяется, когда модель pinhole и коэффициентов не больше 5; иначе — OpenCV.
+static void projectPinhole(const std::vector<Eigen::Vector3d>& pts,
+                           const CameraParams& cam,
+                           std::vector<double>& u_out,
+                           std::vector<double>& v_out) {
+    u_out.resize(pts.size());
+    v_out.resize(pts.size());
+    const double fx = cam.K(0, 0), cx = cam.K(0, 2);
+    const double fy = cam.K(1, 1), cy = cam.K(1, 2);
+    double k1 = 0.0, k2 = 0.0, p1 = 0.0, p2 = 0.0, k3 = 0.0;
+    if (cam.dist.size() > 0) k1 = cam.dist[0];
+    if (cam.dist.size() > 1) k2 = cam.dist[1];
+    if (cam.dist.size() > 2) p1 = cam.dist[2];
+    if (cam.dist.size() > 3) p2 = cam.dist[3];
+    if (cam.dist.size() > 4) k3 = cam.dist[4];
+    for (std::size_t i = 0; i < pts.size(); ++i) {
+        const double X = pts[i].x(), Y = pts[i].y(), Z = pts[i].z();
+        const double x = X / Z, y = Y / Z;
+        const double r2 = x * x + y * y;
+        const double radial = 1.0 + k1 * r2 + k2 * r2 * r2 + k3 * r2 * r2 * r2;
+        const double xd = x * radial + 2.0 * p1 * x * y + p2 * (r2 + 2.0 * x * x);
+        const double yd = y * radial + p1 * (r2 + 2.0 * y * y) + 2.0 * p2 * x * y;
+        u_out[i] = fx * xd + cx;
+        v_out[i] = fy * yd + cy;
+    }
+}
+
 void projectAndSample(const Cloud& cloud, const std::vector<int>& cand,
                       const cv::Mat& img, const CameraParams& cam,
                       const Eigen::Matrix4d& T_cam_from_world,
@@ -43,7 +73,7 @@ void projectAndSample(const Cloud& cloud, const std::vector<int>& cand,
     const Eigen::Vector3d t = T_cam_from_world.col(3).head(3);
 
     // Pass 1: geometry gates (z>0, d>0, min-camera-dist, max view angle).
-    std::vector<cv::Point3f> cam_pts;
+    std::vector<Eigen::Vector3d> cam_pts;         // camera-frame points (doubles)
     std::vector<int> cam_idx;
     std::vector<double> depth;                    // pc.z, doubles (Python float64)
     std::vector<double> dists;                    // approx |pc| (~0.2%), --nearest-wins
@@ -65,9 +95,7 @@ void projectAndSample(const Cloud& cloud, const std::vector<int>& cand,
         if (!(z > 1e-6) || !(d3 > 1e-6)) continue;
         if (min_camera_dist > 0.0 && d3 < min_camera_dist) continue;
         if (cos_view > -1.0 && z / d3 < cos_view) continue;
-        cam_pts.emplace_back(static_cast<float>(pc.x()),
-                             static_cast<float>(pc.y()),
-                             static_cast<float>(pc.z()));
+        cam_pts.emplace_back(pc.x(), pc.y(), pc.z());
         cam_idx.push_back(i);
         depth.push_back(z);
         dists.push_back(fastSqrtApprox(pc.squaredNorm()));
@@ -75,35 +103,51 @@ void projectAndSample(const Cloud& cloud, const std::vector<int>& cand,
     if (cam_pts.empty()) return;
 
     // Pass 2: project. Points are already in the camera frame, and the Python
-    // script also passes zero rvec/tvec; the fisheye model is used when the
-    // camera says so (same fallback logic as Python's hasattr(cv2,"fisheye")).
-    const cv::Mat rvec = cv::Mat::zeros(3, 1, CV_64F);
-    const cv::Mat tvec = cv::Mat::zeros(3, 1, CV_64F);
-    cv::Mat K = cv::Mat::zeros(3, 3, CV_64F);
-    for (int r = 0; r < 3; ++r)
-        for (int c = 0; c < 3; ++c)
-            K.at<double>(r, c) = cam.K(r, c);
-    cv::Mat D(1, static_cast<int>(cam.dist.size()), CV_64F);
-    for (size_t i = 0; i < cam.dist.size(); ++i)
-        D.at<double>(0, static_cast<int>(i)) = cam.dist[i];
-
-    std::vector<cv::Point2f> P2;
-    if (cam.model == "fisheye")
-        // fisheye::projectPoints(obj, imagePoints, rvec, tvec, K, D)
-        cv::fisheye::projectPoints(cam_pts, P2, rvec, tvec, K, D);
-    else
-        // projectPoints(obj, rvec, tvec, K, D, imagePoints)
-        cv::projectPoints(cam_pts, rvec, tvec, K, D, P2);
+    // script also passes zero rvec/tvec. Pinhole with <=5 distortion coefficients
+    // uses our own vectorised projection (like project_pinhole() in Python);
+    // fisheye and longer coefficient vectors fall back to OpenCV, exactly as the
+    // Python script does.
+    const bool own_pinhole =
+        (cam.model != "fisheye") && (cam.dist.size() <= 5);
+    std::vector<double> u_d, v_d;                 // own projection (doubles)
+    std::vector<cv::Point2f> P2;                  // OpenCV projection
+    if (own_pinhole) {
+        projectPinhole(cam_pts, cam, u_d, v_d);
+    } else {
+        std::vector<cv::Point3f> pts_f;
+        pts_f.reserve(cam_pts.size());
+        for (const Eigen::Vector3d& p : cam_pts)
+            pts_f.emplace_back(static_cast<float>(p.x()),
+                               static_cast<float>(p.y()),
+                               static_cast<float>(p.z()));
+        const cv::Mat rvec = cv::Mat::zeros(3, 1, CV_64F);
+        const cv::Mat tvec = cv::Mat::zeros(3, 1, CV_64F);
+        cv::Mat K = cv::Mat::zeros(3, 3, CV_64F);
+        for (int r = 0; r < 3; ++r)
+            for (int c = 0; c < 3; ++c)
+                K.at<double>(r, c) = cam.K(r, c);
+        cv::Mat D(1, static_cast<int>(cam.dist.size()), CV_64F);
+        for (size_t i = 0; i < cam.dist.size(); ++i)
+            D.at<double>(0, static_cast<int>(i)) = cam.dist[i];
+        if (cam.model == "fisheye")
+            // fisheye::projectPoints(obj, imagePoints, rvec, tvec, K, D)
+            cv::fisheye::projectPoints(pts_f, P2, rvec, tvec, K, D);
+        else
+            // projectPoints(obj, rvec, tvec, K, D, imagePoints)
+            cv::projectPoints(pts_f, rvec, tvec, K, D, P2);
+    }
 
     // Pass 2b: usable rectangle after trimming edge_margin; np.round -> nearbyint.
     const int m = static_cast<int>(std::lround(edge_margin));
     const int u_lo = m, u_hi = cam.width - m;
     const int v_lo = m, v_hi = cam.height - m;
 
-    std::vector<int> uu(P2.size()), vv(P2.size());
-    std::vector<unsigned char> ok(P2.size(), 0);
-    for (size_t k = 0; k < P2.size(); ++k) {
-        const double px = P2[k].x, py = P2[k].y;
+    const std::size_t npts = own_pinhole ? u_d.size() : P2.size();
+    std::vector<int> uu(npts), vv(npts);
+    std::vector<unsigned char> ok(npts, 0);
+    for (size_t k = 0; k < npts; ++k) {
+        const double px = own_pinhole ? u_d[k] : static_cast<double>(P2[k].x);
+        const double py = own_pinhole ? v_d[k] : static_cast<double>(P2[k].y);
         if (!std::isfinite(px) || !std::isfinite(py)) continue;
         const int u = static_cast<int>(std::nearbyint(px));
         const int v = static_cast<int>(std::nearbyint(py));
@@ -119,14 +163,14 @@ void projectAndSample(const Cloud& cloud, const std::vector<int>& cand,
         const int gh = static_cast<int>(std::ceil(cam.height / cell));
         std::vector<double> zmin(static_cast<size_t>(gw) * gh,
                                  std::numeric_limits<double>::infinity());
-        for (size_t k = 0; k < P2.size(); ++k) {
+        for (size_t k = 0; k < npts; ++k) {
             if (!ok[k]) continue;
             const int gx = static_cast<int>(uu[k] / cell);
             const int gy = static_cast<int>(vv[k] / cell);
             double& z = zmin[static_cast<size_t>(gy) * gw + gx];
             if (depth[k] < z) z = depth[k];
         }
-        for (size_t k = 0; k < P2.size(); ++k) {
+        for (size_t k = 0; k < npts; ++k) {
             if (!ok[k]) continue;
             const int gx = static_cast<int>(uu[k] / cell);
             const int gy = static_cast<int>(vv[k] / cell);
@@ -136,9 +180,10 @@ void projectAndSample(const Cloud& cloud, const std::vector<int>& cand,
     }
 
     // Pass 4: sample colours from the BGR image and pack PCL-style rgb.
-    out_rgb.reserve(P2.size());
-    out_idx.reserve(P2.size());
-    for (size_t k = 0; k < P2.size(); ++k) {
+    out_rgb.reserve(npts);
+    out_idx.reserve(npts);
+    out_dist.reserve(npts);
+    for (size_t k = 0; k < npts; ++k) {
         if (!ok[k]) continue;
         int u = uu[k], v = vv[k];
         if (W != cam.width || H != cam.height) {

@@ -25,7 +25,7 @@ bag-е, только без ROS: снимки берутся из каталог
 | Библиотека | Для чего |
 |---|---|
 | Eigen3 ≥ 3.3 | 4×4-трансформы, кватернионы, SLERP |
-| OpenCV ≥ 4 | чтение фото, `cv::projectPoints` / `cv::fisheye::projectPoints` |
+| OpenCV ≥ 4 | чтение фото (и проекция fisheye/сложной дисторсии) |
 | nlohmann/json | vendored single-header в `../colorise/third_party/` |
 
 ```bash

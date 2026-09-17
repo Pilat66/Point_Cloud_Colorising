@@ -268,6 +268,28 @@ def pack_rgb(r,g,b):
 def unpack_rgb(p):
     p=np.asarray(p,np.uint32); return np.stack([(p>>16)&255,(p>>8)&255,p&255],axis=1)
 
+def project_pinhole(pc,K,dist):
+    """Собственная векторная проекция pinhole (radtan/plumb_bob): x/z, дисторсия
+    k1,k2,p1,p2,k3, затем fx,fy,cx,cy. Все вычисления в float64, порядок операций
+    тот же, что в projectPinhole() (colorise/src/project.cpp) — паритет C++/Python.
+    Применяется, когда модель pinhole и коэффициентов дисторсии не больше 5
+    (иначе используется cv2.projectPoints, как и в C++-версии)."""
+    X=pc[:,0]; Y=pc[:,1]; Z=pc[:,2]
+    x=X/Z; y=Y/Z
+    r2=x*x+y*y
+    k1=k2=p1=p2=k3=0.0
+    if len(dist)>0: k1=float(dist[0])
+    if len(dist)>1: k2=float(dist[1])
+    if len(dist)>2: p1=float(dist[2])
+    if len(dist)>3: p2=float(dist[3])
+    if len(dist)>4: k3=float(dist[4])
+    radial=1.0+k1*r2+k2*r2*r2+k3*r2*r2*r2
+    xd=x*radial+2.0*p1*x*y+p2*(r2+2.0*x*x)
+    yd=y*radial+p1*(r2+2.0*y*y)+2.0*p2*x*y
+    u=K[0,0]*xd+K[0,2]
+    v=K[1,1]*yd+K[1,2]
+    return np.column_stack([u,v])
+
 def project_and_sample(P,idx,img,K,dist,model,cam_w,cam_h,T_cam_from_pts,edge_margin=0.0,max_view_angle_deg=180.0,min_camera_dist=0.0,occlusion=True,occl_cell=4.0,occl_tol=0.3):
     if idx is None or len(idx)==0 or img is None:
         return np.zeros(0,np.uint32),np.zeros(0,np.int64),np.zeros(0,np.float64)
@@ -281,7 +303,10 @@ def project_and_sample(P,idx,img,K,dist,model,cam_w,cam_h,T_cam_from_pts,edge_ma
     if pc.shape[0]==0: return np.zeros(0,np.uint32),np.zeros(0,np.int64),np.zeros(0,np.float64)
     rv=np.zeros((3,1)); tv=np.zeros((3,1))
     if model=="fisheye" and hasattr(cv2,"fisheye"):
-        _r=cv2.fisheye.projectPoints(pc.astype(np.float32),rv,tv,K,dist); P2=np.asarray(_r[0] if isinstance(_r,tuple) else _r).reshape(-1,2)
+        # OpenCV требует массив формы (N,1,3) (CV_32FC3) — иначе assertion
+        _r=cv2.fisheye.projectPoints(pc.astype(np.float32).reshape(-1,1,3),rv,tv,K,dist); P2=np.asarray(_r[0] if isinstance(_r,tuple) else _r).reshape(-1,2)
+    elif len(dist)<=5:
+        P2=project_pinhole(pc,K,dist)          # своя векторная проекция
     else:
         _r=cv2.projectPoints(pc.astype(np.float32),rv,tv,K,dist); P2=np.asarray(_r[0] if isinstance(_r,tuple) else _r).reshape(-1,2)
     fin=np.isfinite(P2[:,0])&np.isfinite(P2[:,1])
