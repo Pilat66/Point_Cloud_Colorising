@@ -291,7 +291,14 @@ def project_and_sample(P,idx,img,K,dist,model,cam_w,cam_h,T_cam_from_pts,edge_ma
     m=int(round(edge_margin))
     inside=fin&(u>=m)&(u<cam_w-m)&(v>=m)&(v<cam_h-m)
     ii,pc,u,v,depth=ii[inside],pc[inside],u[inside],v[inside],pc[inside,2]
-    dnorm=np.linalg.norm(pc,axis=1)   # camera-to-point distance, for --nearest-wins
+    # camera-to-point distance for --nearest-wins: батчевое приближение sqrt
+    # (бит-трюк + одна итерация Ньютона, ошибка <0.2%); арифметика бит-в-бит
+    # совпадает с fastSqrtApprox() в colorise/src/project.cpp — паритет C++/Python.
+    d2=(pc*pc).sum(1)
+    f=d2.astype(np.float32)
+    y=(np.uint32(0x5f3759df)-(f.view(np.uint32)>>np.uint32(1))).view(np.float32)
+    y=y*(np.float32(1.5)-np.float32(0.5)*f*y*y)
+    dnorm=(f*y).astype(np.float64)
     if pc.shape[0]==0:
         return np.zeros(0,np.uint32),np.zeros(0,np.int64),np.zeros(0,np.float64)
     if occlusion:

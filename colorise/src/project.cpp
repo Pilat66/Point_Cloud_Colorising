@@ -2,10 +2,26 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Projection core — a 1:1 port of project_and_sample() from colorise_offline.py
 // ─────────────────────────────────────────────────────────────────────────────
+
+// Аппроксимация sqrt(d2) для метрики --nearest-wins: бит-трюк fast inverse
+// sqrt (float32) + одна итерация Ньютона, относительная ошибка <0.2% на любой
+// дистанции. Арифметика бит-в-бит совпадает с батчевым расчётом в
+// colorise_offline.py (project_and_sample) — паритет C++/Python.
+static double fastSqrtApprox(double d2) {
+    float f = static_cast<float>(d2);
+    std::uint32_t i;
+    std::memcpy(&i, &f, sizeof i);
+    i = 0x5f3759dfu - (i >> 1);
+    float y;
+    std::memcpy(&y, &i, sizeof y);
+    y = y * (1.5f - 0.5f * f * y * y);
+    return static_cast<double>(f * y);
+}
 
 void projectAndSample(const Cloud& cloud, const std::vector<int>& cand,
                       const cv::Mat& img, const CameraParams& cam,
@@ -30,7 +46,7 @@ void projectAndSample(const Cloud& cloud, const std::vector<int>& cand,
     std::vector<cv::Point3f> cam_pts;
     std::vector<int> cam_idx;
     std::vector<double> depth;                    // pc.z, doubles (Python float64)
-    std::vector<double> dists;                    // |pc| — camera-to-point distance
+    std::vector<double> dists;                    // approx |pc| (~0.2%), --nearest-wins
     cam_pts.reserve(cand.size());
     cam_idx.reserve(cand.size());
     depth.reserve(cand.size());
@@ -54,7 +70,7 @@ void projectAndSample(const Cloud& cloud, const std::vector<int>& cand,
                              static_cast<float>(pc.z()));
         cam_idx.push_back(i);
         depth.push_back(z);
-        dists.push_back(d3);
+        dists.push_back(fastSqrtApprox(pc.squaredNorm()));
     }
     if (cam_pts.empty()) return;
 

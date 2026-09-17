@@ -1,0 +1,26 @@
+iteration: ITER-20260917-155830
+date: 2026-09-17
+time: 15:58:30
+status: completed
+user_request: >
+  Оптимизация: вычислять близость сразу для группы точек с точностью 1%
+  (близость для дальних точек менее важна; наибольший эффект около 5 м).
+approach: >
+  Дистанция для --nearest-wins — батчевый быстрый sqrt (бит-трюк float32 +
+  одна итерация Ньютона, ошибка <0.2% < 1%), одинаковая бит-в-бит арифметика
+  в colorise_offline.py и colorise/src/project.cpp. Точные гейты не тронуты.
+files:
+  - colorise_offline.py
+  - colorise/src/project.cpp
+  - colorise/README.md
+  - colorise_offline_README.md
+  - ColoriseMap/README.md
+  - CHANGELOG.md
+validation: >
+  Точность: max rel err 0.1752% (1M точек). Паритет: nearest-wins py=cpp=map
+  побайтово (847e7366); регресс average/first-wins побайтово = baseline;
+  детерминизм jobs1=auto. Изменение результата против точного nearest:
+  2/72455 точек (0.003%).
+notes: >
+  Замеры (ранее): полная стоимость точной нормы ~32 мс на 19 кадров — эффект
+  оптимизации микроскопический; реализовано по явному запросу пользователя.
