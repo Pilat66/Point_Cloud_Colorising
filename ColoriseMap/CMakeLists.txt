@@ -35,6 +35,7 @@ include_directories(
 
 add_executable(colorise_map
     src/main.cpp
+    src/cube_colourise.cpp
     ${SHARED_DIR}/src/io.cpp
     ${SHARED_DIR}/src/trajectory.cpp
     ${SHARED_DIR}/src/project.cpp

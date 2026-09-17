@@ -124,6 +124,39 @@ void saveCloud(const std::string& path, const Cloud& cloud,
                const std::vector<char>& keep, const std::vector<uint32_t>& rgb,
                int jobs = 1);
 
+// ─────────────────────────────────────────────────────────────────────────────
+// LAS with timestamps (cube colourisation mode).
+//
+// Raw point data: X/Y/Z stay the original int32 with the header scale/offset,
+// so they can be written back bit-exactly; `time` holds gps_time (empty when
+// the point format carries no timestamp). Point formats 0-10 are accepted
+// (gps_time lives at byte 20 for formats 1/3/4/5 and at byte 22 for 6-10).
+// ─────────────────────────────────────────────────────────────────────────────
+struct LasRaw {
+    std::vector<int32_t>  X, Y, Z;
+    std::vector<uint16_t> intensity;
+    std::vector<double>   time;
+    int    fmt     = 0;
+    int    rec_len = 0;
+    double sx = 0.0, sy = 0.0, sz = 0.0;
+    double ox = 0.0, oy = 0.0, oz = 0.0;
+
+    std::size_t n() const { return X.size(); }
+    bool hasTime() const { return !time.empty(); }
+    double x(std::size_t i) const { return sx * X[i] + ox; }
+    double y(std::size_t i) const { return sy * Y[i] + oy; }
+    double z(std::size_t i) const { return sz * Z[i] + oz; }
+};
+
+void loadLasRaw(const std::string& path, LasRaw& las);
+
+// Writes LAS 1.4 point format 7 (RGB + gps_time), in the order given by `order`
+// (points with keep[i] == 0 are skipped). Coordinates, intensity and gps_time
+// are copied from `las` unchanged.
+void saveLas7(const std::string& path, const LasRaw& las,
+              const std::vector<uint32_t>& order, const std::vector<char>& keep,
+              const std::vector<uint32_t>& rgb);
+
 // Photos from a directory, timestamped from their filenames, sorted by time.
 std::vector<Photo> listPhotos(const std::string& dir);
 

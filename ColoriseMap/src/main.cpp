@@ -20,6 +20,7 @@
 
 #include "colorise.h"
 #include "voxel_grid.hpp"
+#include "cube_colourise.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -97,6 +98,13 @@ struct MapOptions {
     std::string extrinsic_direction;
     bool        nearest_wins        = false;  // colour from the nearest camera only
     int         jobs                = 0;      // 0 = all cores
+
+    // Cube mode (--cube): spatial 1 m buckets + per-point gps_time selection.
+    double      cube_size           = 0.0;    // 0 = off (frame pipeline)
+    double      score_w_time        = 1.0;    // --score-time-weight
+    double      score_w_dist        = 1.0;    // --score-dist-weight
+    double      score_t_ref         = 1.0;    // --score-time-scale, s
+    double      score_d_ref         = 10.0;   // --score-dist-scale, m
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -128,6 +136,12 @@ static void printUsage() {
         "  --occlusion-depth-tol <m>   z-buffer tolerance            [0.3]\n"
         "  --keep-uncolored            write uncoloured points as black\n"
         "  --nearest-wins              colour each point only from the nearest camera\n"
+        "  --cube <m>                  cube mode: 1 m buckets + per-point gps_time\n"
+        "                              scoring (needs a LAS with timestamps)\n"
+        "  --score-time-weight <w>     cube mode: weight of |dt|        [1.0]\n"
+        "  --score-dist-weight <w>     cube mode: weight of distance    [1.0]\n"
+        "  --score-time-scale <s>      cube mode: |dt| normaliser       [1.0]\n"
+        "  --score-dist-scale <m>      cube mode: distance normaliser   [10.0]\n"
         "  --extrinsic-name <key>      exact/suffix key in calib.json\n"
         "  --extrinsic-direction {camera_from_lidar|lidar_from_camera}\n"
         "  --euler-order {xyz|zyx}     Euler rotation order          [xyz]\n"
@@ -217,6 +231,16 @@ static bool parseArgs(int argc, char** argv, MapOptions& o) {
             o.occlusion_depth_tol = parseDoubleValue(value(key).c_str(), key);
         else if (key == "--keep-uncolored") o.keep_uncolored = true;
         else if (key == "--nearest-wins") o.nearest_wins = true;
+        else if (key == "--cube")
+            o.cube_size = parseDoubleValue(value(key).c_str(), key);
+        else if (key == "--score-time-weight")
+            o.score_w_time = parseDoubleValue(value(key).c_str(), key);
+        else if (key == "--score-dist-weight")
+            o.score_w_dist = parseDoubleValue(value(key).c_str(), key);
+        else if (key == "--score-time-scale")
+            o.score_t_ref = parseDoubleValue(value(key).c_str(), key);
+        else if (key == "--score-dist-scale")
+            o.score_d_ref = parseDoubleValue(value(key).c_str(), key);
 
         else if (key == "--extrinsic-name") o.extrinsic_name = value(key);
         else if (key == "--extrinsic-direction") {
@@ -706,10 +730,48 @@ auto worker = [&]() {
     return 0;
 }
 
+// Cube mode: переиспользует загрузчики colorise/, но раскрашивает по кубам и
+// по времени точки (см. cube_colourise.hpp).
+static int runCube(const MapOptions& o, const CameraSpec& cam) {
+    CubeOptions c;
+    c.cloud_path          = o.cloud_path;
+    c.photos_dir          = cam.photos_dir;
+    c.trajectory_path     = o.trajectory_path;
+    c.calib_path          = cam.calib_path;
+    c.output_path         = o.output_path;
+    c.extrinsic_name      = o.extrinsic_name;
+    c.extrinsic_direction = o.extrinsic_direction;
+    c.euler_order         = o.euler_order;
+    c.euler_units         = o.euler_units;
+    c.time_shift          = o.time_shift;
+    c.time_tolerance      = o.time_tolerance;
+    c.cube_size           = o.cube_size;
+    c.occlusion           = o.occlusion;
+    c.occlusion_cell_px   = o.occlusion_cell_px;
+    c.occlusion_depth_tol = o.occlusion_depth_tol;
+    c.min_camera_dist     = o.min_camera_dist;
+    c.max_view_angle_deg  = o.max_view_angle_deg;
+    c.max_range           = o.map_max_range;
+    c.score_w_time        = o.score_w_time;
+    c.score_w_dist        = o.score_w_dist;
+    c.score_t_ref         = o.score_t_ref;
+    c.score_d_ref         = o.score_d_ref;
+    c.keep_uncolored      = o.keep_uncolored;
+    c.jobs                = o.jobs;
+    return runCubeColourise(c);
+}
+
 int main(int argc, char** argv) {
     MapOptions o;
     try {
         parseArgs(argc, argv, o);
+        if (o.cube_size > 0.0) {
+            if (o.cameras.size() != 1)
+                throw std::runtime_error(
+                    "--cube works with exactly one camera "
+                    "(--photos <dir> --calib <json>)");
+            return runCube(o, o.cameras.front());
+        }
         return run(o);
     } catch (const std::exception& e) {
         std::fprintf(stderr, "\n[error] exception: %s\n", e.what());
