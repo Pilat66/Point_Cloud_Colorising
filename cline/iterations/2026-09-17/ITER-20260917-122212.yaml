@@ -1,0 +1,27 @@
+iteration: ITER-20260917-122212
+date: 2026-09-17
+time: 12:22:12
+status: completed
+user_request: >
+  make_photo_plane.py: рамка кадра снимка рисуется в плоскости создаваемого
+  облака точек. Надо её рисовать там, где располагается реальная фотография —
+  ближе к камере, отдельно от облака.
+approach: >
+  Новая опция --frame-distance (по умолчанию 1 м): рамка строится лучами через
+  те же пиксели границы кадра, но в плоскости z = frame_distance у камеры,
+  между камерой и облаком (0 < frame-distance < distance). Облако не меняется.
+  Docstring, [photo-frame], README §2/§3/§5/§8, CHANGELOG.
+files:
+  - make_photo_plane.py
+  - make_photo_plane_README.md
+  - CHANGELOG.md
+validation: >
+  1) Облако (точки до рамки) побайтово равно прежнему прогону; 2) проекция
+  рамки лежит на границе кадра (±0.01 px) и все точки на z=frame_distance;
+  3) негативы --frame-distance 0 / >= distance; 4) наклон 30°: рамка
+  перпендикулярна, облако наклонено; 5) детерминизм cmp.
+notes: >
+  Ядро раскраски (colorise/, colorise_offline.py, ColoriseMap/) не затронуто —
+  синхронизация реализаций не требуется. Рамочные точки на frame_distance < 2 м
+  не окрашиваются (--min-camera-dist 2) — осознанное поведение, печатается
+  примечание.

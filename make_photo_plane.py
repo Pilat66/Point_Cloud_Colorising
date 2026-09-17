@@ -16,8 +16,10 @@
     пишутся в файлы, поэтому память не зависит от размера фикстуры.
 
     Дополнительно в конец облака добавляются 100 точек (25 на каждую сторону) —
-    рамка кадра снимка: она отмечает, где находится «виртуальная фотография»,
-    в той же плоскости и на том же расстоянии, что и облако.
+    рамка кадра снимка: она отмечает, где находится «виртуальная фотография».
+    Рамка строится в плоскости, параллельной изображению, на --frame-distance
+    от камеры (по умолчанию 1 м) — между камерой и облаком, отдельно от
+    фикстуры.
 
     Время снимка берётся из имени файла (эпоха в нс/мс/с), поза камеры — из
     траектории и калибровки, той же цепочкой, что и в colorise_offline.
@@ -89,6 +91,8 @@ def parse_args(argv=None):
                     help="наклон плоскости вокруг оси Y камеры, градусы [0]")
     ap.add_argument("--margin", type=float, default=1.05,
                     help="запас за границы кадра, доли (1.0 = ровно по углам) [1.05]")
+    ap.add_argument("--frame-distance", type=float, default=1.0,
+                    help="м; расстояние от камеры до рамки кадра (0 < d < --distance) [1.0]")
     ap.add_argument("--output", default="", help="куда писать облако [<имя фото>-plane-...pcd]")
     ap.add_argument("--chunk", type=int, default=1000,
                     help="сколько точек считать и писать за один заход [1000]")
@@ -128,12 +132,12 @@ def image_corner_rays(cam):
     return pixel_rays(cam, [[0.0, 0.0], [w - 1.0, 0.0], [w - 1.0, h - 1.0], [0.0, h - 1.0]])
 
 
-def photo_frame_points(cam, distance, per_side=25):
+def photo_frame_points(cam, frame_distance, per_side=25):
     """
     Точки по периметру кадра снимка: per_side на сторону (25 -> ровно 100).
     Пиксели равномерно раскладываются по границе изображения, затем их лучи
-    пересекаются с плоскостью z=distance, поэтому проекция каждой точки лежит
-    точно на границе кадра — рамка отмечает именно место фотографии.
+    пересекаются с плоскостью z=frame_distance — так рамка лежит там, где
+    находится реальная фотография (ближе к камере), отдельно от облака.
     """
     w, h = cam["width"], cam["height"]
     n = per_side * 4
@@ -147,9 +151,9 @@ def photo_frame_points(cam, distance, per_side=25):
         pix[i] = corners[k] * (1.0 - f) + corners[(k + 1) % 4] * f
     rays = pixel_rays(cam, pix)
     pts = np.empty((n, 3), np.float64)
-    pts[:, 0] = distance * rays[:, 0]
-    pts[:, 1] = distance * rays[:, 1]
-    pts[:, 2] = distance
+    pts[:, 0] = frame_distance * rays[:, 0]
+    pts[:, 1] = frame_distance * rays[:, 1]
+    pts[:, 2] = frame_distance
     return pts
 
 
@@ -242,6 +246,10 @@ def main(argv=None):
         raise SystemExit("--distance должен быть > 0")
     if args.ppm <= 0.0:
         raise SystemExit("--ppm должен быть > 0")
+    if not (0.0 < args.frame_distance < args.distance):
+        raise SystemExit("--frame-distance {} м должен быть в диапазоне "
+                         "(0, --distance {:g}): рамка лежит между камерой и "
+                         "облаком".format(args.frame_distance, args.distance))
     if not os.path.isfile(args.photo):
         raise SystemExit("нет такого файла: " + args.photo)
 
@@ -324,9 +332,10 @@ def main(argv=None):
     R_wc, o_wc = T_world_cam[:3, :3], T_world_cam[:3, 3]
     dt = np.dtype([("x", "<f4"), ("y", "<f4"), ("z", "<f4"),
                    ("intensity", "<f4"), ("rgb", "<u4")])
-    # Рамка кадра снимка: 100 точек по периметру (25 на сторону) — та же
-    # плоскость и то же место, где находится «виртуальная фотография».
-    frame_cam = photo_frame_points(cam, args.distance)
+    # Рамка кадра снимка: 100 точек по периметру (25 на сторону) — в плоскости
+    # у камеры на --frame-distance, где находится реальная фотография; облако —
+    # дальше, на --distance.
+    frame_cam = photo_frame_points(cam, args.frame_distance)
     frame_xyz = (R_wc @ frame_cam.T).T + o_wc
     written = 0
     with open(out_path, "wb") as fc:
@@ -353,8 +362,14 @@ def main(argv=None):
         fc.write(rec.tobytes())
         written += frame_cam.shape[0]
     print("[cloud] {} точек -> {}".format(written, out_path))
-    print("[photo-frame] {} точек по периметру кадра ({} на сторону), z = {:g} м".format(
-        frame_cam.shape[0], frame_cam.shape[0] // 4, args.distance))
+    print("[photo-frame] {} точек по периметру кадра ({} на сторону), z = {:g} м "
+          "(облако на {:g} м, масштаб {:g}x)".format(
+              frame_cam.shape[0], frame_cam.shape[0] // 4, args.frame_distance,
+              args.distance, args.frame_distance / args.distance))
+    if args.frame_distance < 2.0:
+        print("[NOTE] рамка на {:.3g} м от камеры: при стандартном --min-camera-dist 2 м "
+              "в colorise_offline эти точки не будут раскрашены (рамка не обязана "
+              "окрашиваться; поднять можно --frame-distance)".format(args.frame_distance))
 
     vis_area = (args.distance * w / cam["K"][0, 0]) * (args.distance * h / cam["K"][1, 1])
     print("[plane] {:.2f} x {:.2f} м, шаг сетки {:.4f} м, сетка {}x{}".format(
