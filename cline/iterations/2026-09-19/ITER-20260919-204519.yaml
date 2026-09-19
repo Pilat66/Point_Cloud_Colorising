@@ -1,0 +1,117 @@
+# ITER-20260919-204519
+---
+meta:
+  id: ITER-20260919-204519
+  status: completed
+  date_started: 2026-09-19 20:45:19
+  date_completed: 2026-09-19 21:00:00
+  branch: master
+
+plan: |
+  План (Plan Mode, утверждён пользователем):
+  - вариант экспорта: самодостаточный ROS-free порт кубового режима раскраски
+    карты + INTEGRATION.md, прицельно описывающий встраивание в FAST-LIVO2-LAS;
+  - состав export/: README.md, ALGORITHM.md, DATA_FORMATS.md, INTEGRATION.md,
+    MANIFEST.md, src/{CMakeLists.txt, ColoriseMap/*, colorise/*}, docs/*,
+    examples/* (мини-данные + генератор + эталоны), tests/smoke.sh;
+  - исходники копируются verbatim из HEAD f6a9202, единственный изменённый файл —
+    src/CMakeLists.txt (только пути сборки);
+  - примеры: 3 снимка из data/img-uniq, выдержка trajectory.csv, фрагмент
+    all_raw_points.las по окну gps_time (файл отсортирован по времени);
+  - валидация: сборка из нуля, детерминизм jobs=1 == auto, cmp с эталонами,
+    laspy-проверка переноса gps_time/координат, самодостаточность (нет
+    абсолютных путей исходного репозитория);
+  - export/ добавляется в .gitignore (артефакт передачи, не дубль в истории).
+
+request: |
+  я хочу перенести функционал раскраски в другой проект. Сформируй директорию
+  export в которую помести файлы необходимые для того чтобы разобраться в
+  алгоритме и внедрить его в другой проект.
+
+  Уточнение (Plan Mode): экспорт строится вокруг кубового режима раскраски карты
+  ColoriseMap --cube (LAS с gps_time, кубы 1 м); целевой проект — FAST-LIVO2-LAS;
+  выбран вариант «самодостаточный ROS-free порт + INTEGRATION.md».
+
+description: >
+  Собран export/ — самодостаточный набор для переноса кубового режима раскраски
+  карты (ColoriseMap --cube) в другой проект. Исходники скопированы verbatim
+  (10 файлов C++), отличается только единый src/CMakeLists.txt (пути сборки) и
+  новые документы. Добавлены 5 новых документов (README, ALGORITHM,
+  DATA_FORMATS, INTEGRATION, MANIFEST), мини-пример данных с генератором и
+  эталонами, а также tests/smoke.sh. export/ добавлен в .gitignore как артефакт
+  передачи (трассируемость — через MANIFEST.md с коммитом и sha256).
+
+changes:
+  - action: created
+    file: export/README.md
+    description: состав, сборка, быстрый старт на примерах, проверка, ограничения
+  - action: created
+    file: export/ALGORITHM.md
+    description: конвейер кубового режима по этапам (LAS-индекс, конус, z-буфер, скоринг, запись, debug1) с формулами и ссылками файл:строка
+  - action: created
+    file: export/DATA_FORMATS.md
+    description: форматы LAS входа/выхода (смещения gps_time, RGB 30-35), trajectory.csv, calib.json, имена фото, debug1 CSV, упаковка RGB
+  - action: created
+    file: export/INTEGRATION.md
+    description: встраивание в FAST-LIVO2-LAS — точки стыковки, calib.json из их YAML, команда запуска, проверки, что заменять, инварианты, ограничения
+  - action: created
+    file: export/MANIFEST.md
+    description: коммит-источник, список verbatim-файлов, sha256 всех 29 файлов, как проверялся экспорт
+  - action: created
+    file: export/src/CMakeLists.txt
+    description: единая сборка colorise_map; единственный файл, отличающийся от репозитория (только пути)
+  - action: created
+    file: export/src/ColoriseMap/{cube_colourise.hpp,cube_colourise.cpp,main.cpp}
+    description: копии исходников кубового режима (verbatim)
+  - action: created
+    file: export/src/colorise/{include/*,src/io.cpp,src/trajectory.cpp,src/project.cpp,third_party/nlohmann/json.hpp}
+    description: копии общего ядра (verbatim)
+  - action: created
+    file: export/docs/{ColoriseMap_README.md,Полезные наблюдения.md}
+    description: оригинальная документация и память-банк проекта-источника
+  - action: created
+    file: export/examples/make_examples.py
+    description: генератор мини-примера из data/ (laspy): окно по gps_time, вырезка LAS fmt 7, выдержка траектории, копия calib.json
+  - action: created
+    file: export/examples/{map.las,trajectory.csv,calib.json,photos/*}
+    description: мини-набор данных — 269 487 точек, 300 поз, 3 кадра (окно 1.5 с)
+  - action: created
+    file: export/examples/golden/{debug1.csv.gz,expected.txt,README.md}
+    description: эталонные выходы прогона (CSV 66 990 строк) и ожидаемые счётчики/sha256 LAS
+  - action: created
+    file: export/tests/smoke.sh
+    description: сборка, детерминизм --jobs 1 vs auto, сверка с эталоном, перенос полей через laspy, доля окрашенных
+  - action: modified
+    file: .gitignore
+    description: добавлен /export/ — артефакт передачи, чтобы копии исходников не попали в историю
+  - action: modified
+    file: CHANGELOG.md
+    description: запись об итерации (раздел 2026-09-19)
+
+dependencies:
+  - Eigen3 (сборка экспорта)
+  - OpenCV 4 (сборка экспорта)
+  - Threads
+  - nlohmann/json (vendored в export/src/colorise/third_party)
+  - laspy + numpy (только генератор примеров и проверка переноса полей)
+
+validation: >
+  Сборка export/src с нуля — rc=0. Сборка копии экспорта вне репозитория
+  (/tmp/export-standalone) — rc=0; grep '/home/reestr' внутри export — пусто.
+  export/tests/smoke.sh --rebuild — 9 проверок PASS: LAS побайтово совпал при
+  --jobs 1 и --jobs auto; debug1 CSV совпал с эталоном (66 990 строк); sha256
+  выходного LAS совпал с expected.txt; gps_time/XYZ/intensity/scale-offset
+  перенесены bit-exact (269 487 точек, проверка через laspy); окрашено 66 986
+  (эталон 66 986); прогон 0.5 с. Все 10 копий исходников совпали с репозиторием
+  через cmp. Хеши всех 29 файлов из MANIFEST.md проверены sha256sum -c.
+
+notes: >
+  Пользователь выбрал вариант «самодостаточный ROS-free порт + INTEGRATION.md с
+  прицельным описанием встраивания в FAST-LIVO2-LAS». В экспорт сознательно не
+  вошли кадровый режим ColoriseMap (усреднение по кадрам) и скановый инструмент
+  colorise/ — упомянуты в INTEGRATION.md §8. export/ не коммитится (в
+  .gitignore): это артефакт передачи, а не второй источник кода; трассируемость
+  обеспечивает MANIFEST.md (коммит f6a9202 + sha256). Незакоммиченный
+  Point_Cloud_Colorising.code-workspace существовал до итерации и в коммит не
+  включён.
+

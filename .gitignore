@@ -28,3 +28,9 @@ __pycache__/
 # Standalone C++ build artefact copied into the package root; run-colorise.sh
 # finds colorise/build/colorise_offline on its own (build/ is ignored above).
 /colorise_offline
+
+# export/ — передаваемый в другой проект набор (копии colorise/ и
+# ColoriseMap/src плюс документы и мини-пример данных). Артефакт передачи,
+# а не второй источник кода: исходники остаются только в репозитории, а
+# трассируемость обеспечивает export/MANIFEST.md (коммит + sha256 файлов).
+/export/
