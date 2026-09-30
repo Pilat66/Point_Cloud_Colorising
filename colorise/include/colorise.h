@@ -38,8 +38,9 @@ struct Options {
     // exceeds occlusion_max_depth (empty cells, min = +inf, also qualify). The
     // mask is dilated by occlusion_ray_margin cells and any point landing in the
     // dilated mask is not coloured: those areas hold no lidar rays, so the
-    // colour sampled there would come from a different surface.
-    double occlusion_max_depth  = 40.0;
+    // colour sampled there would come from a different surface. Off by default
+    // (occlusion_max_depth = +inf): give a finite limit to enable the gate.
+    double occlusion_max_depth  = std::numeric_limits<double>::infinity();
     int    occlusion_ray_margin = 1;
     int    min_color_frames    = 1;
     bool   keep_uncolored      = false;

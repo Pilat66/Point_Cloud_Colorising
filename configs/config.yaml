@@ -106,14 +106,15 @@ initial_startup_delay: 0.5    # s, buffer fill before processing starts
 occlusion_check:     true
 occlusion_cell_px:   4.0    # z-buffer cell size; larger = stricter, coarser
 occlusion_depth_tol: 0.3    # m, depth spread tolerated within one cell
-# "No lidar rays" gate. A z-buffer cell whose minimum depth exceeds
-# occlusion_max_depth (or that received no point at all, min = +inf) is treated
-# as an area without lidar rays; the mask is dilated by occlusion_ray_margin
-# cells and points landing in it are not coloured. Density-sensitive: on a sparse
-# cloud the gaps between points look like empty cells and coverage collapses —
-# set occlusion_max_depth: .inf (or occlusion_ray_margin: 0) to disable.
-occlusion_max_depth:  40.0  # m, depth beyond which an area counts as "no rays"
-occlusion_ray_margin: 1     # cells, dilation of that mask
+# "No lidar rays" gate (off by default). A z-buffer cell whose minimum depth
+# exceeds occlusion_max_depth (or that received no point at all, min = +inf) is
+# treated as an area without lidar rays; the mask is dilated by
+# occlusion_ray_margin cells and points landing in it are not coloured. Enable it
+# by setting a finite occlusion_max_depth (e.g. 40). Density-sensitive: on a
+# sparse cloud the gaps between points look like empty cells and coverage
+# collapses when the gate is on.
+#occlusion_max_depth: 40.0  # m, uncomment + set a finite value to enable
+occlusion_ray_margin: 1     # cells, dilation of the mask (used when the gate is on)
 
 # ── Output ───────────────────────────────────────────────────────────────────
 keep_uncolored_points: false  # true = keep uncoloured points as black

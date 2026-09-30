@@ -107,8 +107,8 @@ struct CommonParams {
     // "No lidar rays" gate: z-buffer cells whose minimum depth exceeds
     // occlusion_max_depth (empty cells, min = +inf, also qualify) are marked,
     // the mask is dilated by occlusion_ray_margin cells and points landing in
-    // the dilated mask are not coloured.
-    double occlusion_max_depth  = 40.0;
+    // the dilated mask are not coloured. Off by default (max depth = +inf).
+    double occlusion_max_depth  = std::numeric_limits<double>::infinity();
     int    occlusion_ray_margin = 1;
 
     // Map node

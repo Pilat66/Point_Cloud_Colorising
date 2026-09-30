@@ -79,7 +79,7 @@ static void printUsage() {
         "  --occlusion / --no-occlusion                        [on]\n"
         "  --occlusion-cell <px>     z-buffer cell            [4.0]\n"
         "  --occlusion-depth-tol <m> z-buffer tolerance       [0.3]\n"
-        "  --occlusion-max-depth <m> no-lidar-rays depth gate  [40.0]\n"
+        "  --occlusion-max-depth <m> no-lidar-rays depth gate  [inf] (off)\n"
         "  --occlusion-ray-margin <n> dilate that mask, cells  [1]\n"
         "  --min-color-frames <n>    min observing frames     [1]\n"
         "  --jobs <n>                worker threads (0 = all cores) [0]\n"

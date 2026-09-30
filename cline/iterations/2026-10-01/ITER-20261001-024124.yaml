@@ -1,0 +1,75 @@
+# ITER-20261001-024124
+---
+meta:
+  id: ITER-20261001-024124
+  status: completed
+  date_started: 2026-10-01 02:41:24
+  date_completed: 2026-10-01 02:45:00
+  branch: master
+
+plan: |
+  Сделать --occlusion-max-depth выключенным по умолчанию: значение по умолчанию
+  меняется с 40 м на +inf (правило «нет лучей» активно только при конечном
+  пределе). occlusion_ray_margin остаётся 1. Флаг/ключ и семантика не меняются,
+  меняется только дефолт; обновить документацию и memory bank.
+
+request: |
+  сделай --occlusion-max-depth по умалчанию выключенной
+
+description: >
+  Дефолт occlusion_max_depth переведён с 40.0 на +inf (std::numeric_limits<double>
+  ::infinity()) во всех трёх C++-реализациях, а также в чтении ключа config.yaml и
+  в usage-строках ([40.0] -> [inf] (off)). Теперь правило «нет лучей» по умолчанию
+  выключено, и вывод C++ с флагами по умолчанию снова совпадает с замороженной
+  Python-версией. В configs/config.yaml ключ occlusion_max_depth закомментирован
+  (включается явным конечным значением). Документация и memory bank обновлены.
+
+changes:
+  - action: modified
+    file: colorise/include/colorise.h
+    description: occlusion_max_depth по умолчанию +inf
+  - action: modified
+    file: include/colorise.h
+    description: то же для ROS Params
+  - action: modified
+    file: ColoriseMap/src/cube_colourise.hpp
+    description: дефолт +inf и include <limits>
+  - action: modified
+    file: ColoriseMap/src/main.cpp
+    description: дефолт MapOptions +inf, usage [inf] (off)
+  - action: modified
+    file: colorise/src/main.cpp
+    description: usage [inf] (off)
+  - action: modified
+    file: src/colorise.cpp
+    description: дефолт чтения ключа occlusion_max_depth -> +inf
+  - action: modified
+    file: configs/config.yaml
+    description: ключ occlusion_max_depth закомментирован (по умолчанию off)
+  - action: modified
+    file: colorise/README.md
+    description: таблица флагов, §5.2, §7, §8 — дефолт выкл.
+  - action: modified
+    file: ColoriseMap/README.md
+    description: таблица флагов и описание — дефолт выкл.
+  - action: modified
+    file: README.md
+    description: раздел Occlusion rejection — default +inf
+  - action: modified
+    file: cline/Полезные наблюдения.md
+    description: наблюдение обновлено под дефолт off
+  - action: modified
+    file: CHANGELOG.md
+    description: запись итерации от 2026-10-01
+  - action: created
+    file: cline/iterations/2026-10-01/ITER-20261001-024124.yaml
+    description: файл итерации
+
+dependencies: []
+
+notes: >
+  Проверено: сборка colorise/ и ColoriseMap/; default кадрового конвейера на
+  фикстуре ppm 1000 -> 99.92 % и побайтово совпадает с Python (cmp OK);
+  --occlusion-max-depth 40 -> 39.04 %; margin 0 -> 99.92 % (правило off);
+  кубовый режим: default 24.86 %, с --occlusion-max-depth 40 -> 0.00 %.
+  usage обоих бинарников печатает [inf] (off).

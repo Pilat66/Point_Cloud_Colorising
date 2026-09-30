@@ -83,7 +83,7 @@ struct MapOptions {
     bool        occlusion           = true;
     double      occlusion_cell_px   = 4.0;
     double      occlusion_depth_tol = 0.3;
-    double      occlusion_max_depth  = 40.0;  // --occlusion-max-depth
+    double      occlusion_max_depth  = std::numeric_limits<double>::infinity();  // --occlusion-max-depth (inf = off)
     int         occlusion_ray_margin = 1;     // --occlusion-ray-margin
     bool        keep_uncolored      = false;
     double      max_time_offset     = 0.05;   // camera pairing tolerance, s
@@ -137,7 +137,7 @@ static void printUsage() {
         "  --occlusion / --no-occlusion                            [on]\n"
         "  --occlusion-cell <px>       z-buffer cell                 [4.0]\n"
         "  --occlusion-depth-tol <m>   z-buffer tolerance            [0.3]\n"
-        "  --occlusion-max-depth <m>   no-lidar-rays depth gate      [40.0]\n"
+        "  --occlusion-max-depth <m>   no-lidar-rays depth gate      [inf] (off)\n"
         "  --occlusion-ray-margin <n>  dilate that mask, cells       [1]\n"
         "  --keep-uncolored            write uncoloured points as black\n"
         "  --nearest-wins              colour each point only from the nearest camera\n"

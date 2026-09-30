@@ -66,7 +66,8 @@ void loadCommonParams(const std::string& config_path, CommonParams& p) {
     p.occlusion_check     = get<bool>  (cfg, "occlusion_check",     true);
     p.occlusion_cell_px   = get<double>(cfg, "occlusion_cell_px",   4.0);
     p.occlusion_depth_tol = get<double>(cfg, "occlusion_depth_tol", 0.3);
-    p.occlusion_max_depth  = get<double>(cfg, "occlusion_max_depth",  40.0);
+    p.occlusion_max_depth  = get<double>(cfg, "occlusion_max_depth",
+                                         std::numeric_limits<double>::infinity());
     p.occlusion_ray_margin = get<int>   (cfg, "occlusion_ray_margin", 1);
 
     p.map_pcd_path     = expandRosPath(get<std::string>(cfg, "map_pcd_path",  ""));

@@ -14,6 +14,7 @@
 // (8 Б) + intensity (2 Б); промежуточные массивы кадра не материализуются.
 #pragma once
 
+#include <limits>
 #include <string>
 
 struct CubeOptions {
@@ -35,7 +36,8 @@ struct CubeOptions {
     double occlusion_cell_px    = 1.0;   // --occlusion-cell
     double occlusion_depth_tol  = 0.03;  // --occlusion-depth-tol
     // --occlusion-max-depth / --occlusion-ray-margin: «нет лидарных лучей».
-    double occlusion_max_depth  = 40.0;
+    // По умолчанию предел +inf — правило выключено; задайте конечное значение.
+    double occlusion_max_depth  = std::numeric_limits<double>::infinity();
     int    occlusion_ray_margin = 1;
     double min_camera_dist      = 0.5;   // --min-camera-dist
     double max_view_angle_deg   = 75.0;  // --max-view-angle

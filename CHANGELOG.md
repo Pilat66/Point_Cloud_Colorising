@@ -364,3 +364,19 @@
     `--jobs 1` (`cmp`), регресс старого пути — при выключенном правиле C++
     побайтово совпадает с замороженной Python-версией (`cmp`).
 
+### 2026-10-01 (правило «нет лучей» выключено по умолчанию)
+
+- `--occlusion-max-depth` / `occlusion_max_depth` по умолчанию **выключен**
+  (`+inf`, итерация ITER-20261001-024124): дефолт изменён с 40 м на
+  `std::numeric_limits<double>::infinity()` во всех трёх C++-реализациях
+  (`colorise/include/colorise.h`, `include/colorise.h`,
+  `ColoriseMap/src/cube_colourise.hpp`, `ColoriseMap/src/main.cpp`) и в чтении
+  ключа `configs/config.yaml`; в usage изменено `[40.0]` → `[inf] (off)`.
+  Ключ `occlusion_max_depth` в `configs/config.yaml` закомментирован (включается
+  явным конечным значением, например 40). `occlusion_ray_margin` по-прежнему `1`.
+- Следствие: с флагами по умолчанию вывод C++ снова побайтово совпадает с
+  замороженной Python-версией, а правило «нет лучей» включается осознанно
+  (на плотных данных). Документация (`colorise/README.md` §5.2,
+  `ColoriseMap/README.md`, `README.md`) и `cline/Полезные наблюдения.md`
+  обновлены.
+

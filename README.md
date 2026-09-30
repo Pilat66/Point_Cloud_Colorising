@@ -145,14 +145,14 @@ and everything behind it land on the same pixels and all get painted with the
 wall's colour. It matters most for map colourisation, where the whole map is
 projected at once.
 
-`occlusion_max_depth` (default `40` m) and `occlusion_ray_margin` (default `1`
-cell) add the "no lidar rays" rule: a z-buffer cell whose minimum depth exceeds
-the limit — including empty cells, where that minimum is `+inf` — is treated as
-an area without lidar rays, the mask is dilated by `occlusion_ray_margin` cells
-and any point landing in the dilated mask is not coloured. The rule is
+`occlusion_max_depth` (default `+inf`, i.e. off) and `occlusion_ray_margin`
+(default `1` cell) add the "no lidar rays" rule: set a finite
+`occlusion_max_depth` (e.g. `40`) to treat a z-buffer cell whose minimum depth
+exceeds it — including empty cells, where that minimum is `+inf` — as an area
+without lidar rays; the mask is then dilated by `occlusion_ray_margin` cells and
+any point landing in the dilated mask is not coloured. The rule is
 density-sensitive: on a sparse cloud the gaps between points look like empty
-cells and coverage collapses, so set `occlusion_max_depth: .inf` (or
-`occlusion_ray_margin: 0`) to disable it.
+cells and coverage collapses, so enable it knowingly on dense data.
 
 ---
 
