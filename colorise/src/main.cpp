@@ -79,6 +79,8 @@ static void printUsage() {
         "  --occlusion / --no-occlusion                        [on]\n"
         "  --occlusion-cell <px>     z-buffer cell            [4.0]\n"
         "  --occlusion-depth-tol <m> z-buffer tolerance       [0.3]\n"
+        "  --occlusion-max-depth <m> no-lidar-rays depth gate  [40.0]\n"
+        "  --occlusion-ray-margin <n> dilate that mask, cells  [1]\n"
         "  --min-color-frames <n>    min observing frames     [1]\n"
         "  --jobs <n>                worker threads (0 = all cores) [0]\n"
         "  --keep-uncolored          keep black points in output\n"
@@ -166,6 +168,13 @@ static bool parseArgs(int argc, char** argv, Options& o) {
             o.occlusion_cell_px = parseDoubleValue(num_value(key).c_str(), key);
         else if (key == "--occlusion-depth-tol")
             o.occlusion_depth_tol = parseDoubleValue(num_value(key).c_str(), key);
+        else if (key == "--occlusion-max-depth")
+            o.occlusion_max_depth = parseDoubleValue(num_value(key).c_str(), key);
+        else if (key == "--occlusion-ray-margin") {
+            o.occlusion_ray_margin = parseLongValue(num_value(key).c_str(), key);
+            if (o.occlusion_ray_margin < 0)
+                throw std::runtime_error("--occlusion-ray-margin must be >= 0");
+        }
         else if (key == "--min-color-frames")
             o.min_color_frames = parseLongValue(num_value(key).c_str(), key);
         else if (key == "--jobs") {
@@ -424,6 +433,8 @@ static int run(const Options& o) {
                                              o.min_camera_dist, o.occlusion,
                                              o.occlusion_cell_px,
                                              o.occlusion_depth_tol,
+                                             o.occlusion_max_depth,
+                                             o.occlusion_ray_margin,
                                              res.rgb, res.idx, res.dist);
                         }
                     }

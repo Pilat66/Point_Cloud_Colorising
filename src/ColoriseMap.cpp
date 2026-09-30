@@ -308,6 +308,7 @@ private:
             projectAndSample(P3_, candidates, img, cam, T_cam_from_world,
                              p_.occlusion_check, p_.occlusion_cell_px,
                              p_.occlusion_depth_tol,
+                             p_.occlusion_max_depth, p_.occlusion_ray_margin,
                              [&](int idx, std::uint32_t rgb) {
                                  colour_sum_[idx] += Eigen::Vector3i((rgb >> 16) & 0xFF,
                                                                      (rgb >>  8) & 0xFF,

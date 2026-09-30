@@ -1,0 +1,106 @@
+# ITER-20261001-021955
+---
+meta:
+  id: ITER-20261001-021955
+  status: completed
+  date_started: 2026-10-01 02:19:55
+  date_completed: 2026-10-01 02:30:00
+  branch: master
+
+plan: |
+  Не раскрашивать области, в которых нет лидарных лучей.
+  Введены два новых флага (по умолчанию включены):
+  - --occlusion-max-depth (occlusion_max_depth), 40 м — предельная глубина;
+  - --occlusion-ray-margin (occlusion_ray_margin), 1 ячейка — окрестность.
+  Ячейка z-буфера считается «нет лучей», если zmin > предельная глубина
+  (включая пустые ячейки zmin = +inf); маска расширяется дилатацией на
+  N ячеек; точки, попавшие в расширенную маску, не красятся.
+  Паритет с Python-версией больше не поддерживается (Python заморожен и
+  перестаёт быть эталоном). Правка общего ядра синхронизируется во всех
+  C++-реализациях: colorise/, src/ (ROS) и ColoriseMap/ (кубовый режим).
+
+request: |
+  обнови алгоритм раскраски. Не раскрашивай области, в которых нет лидарных
+  лучей. То есть буфер глубин показывает глубину больше предельной.
+  учти, что надо не раскрашивать точки в какой то окрестности точки с
+  предельной глубиной.
+  (уточнения: окрестность задаётся в кадре камеры по z-буферу; --max-range
+  не трогаем, вводим новый флаг; по умолчанию occlusion_max_depth = 40,
+  occlusion_ray_margin = 1; python версию больше не учитывать)
+
+description: >
+  Добавлено правило «не раскрашивать области без лидарных лучей»: ячейка z-буфера
+  с min-глубиной больше --occlusion-max-depth (пустые ячейки = +inf тоже) считается
+  «нет лучей», маска расширяется дилатацией на --occlusion-ray-margin ячеек, точки
+  из маски не окрашиваются. Новые ключи/флаги (по умолчанию 40 м и 1 ячейка)
+  прокинуты во все три C++-реализации ядра (colorise/, src/ ROS, ColoriseMap/
+  кубовый) и configs/config.yaml. Правило чувствительно к плотности облака;
+  задокументировано предупреждение. Паритет с Python-версией снят с инвариантов.
+
+changes:
+  - action: modified
+    file: colorise/include/colorise.h
+    description: опции occlusion_max_depth/occlusion_ray_margin + сигнатура projectAndSample
+  - action: modified
+    file: colorise/src/project.cpp
+    description: Pass 3 — z-буфер, маска «нет лучей» и её дилатация
+  - action: modified
+    file: colorise/src/main.cpp
+    description: парсинг --occlusion-max-depth/--occlusion-ray-margin, usage, вызов ядра
+  - action: modified
+    file: include/colorise.h
+    description: ROS Params и сигнатура projectAndSample
+  - action: modified
+    file: src/colorise.cpp
+    description: чтение ключей конфига + реализация правила в z-буфере ROS
+  - action: modified
+    file: src/ColoriseScan.cpp
+    description: прокинуты новые параметры в вызов ядра
+  - action: modified
+    file: src/ColoriseMap.cpp
+    description: прокинуты новые параметры в вызов ядра
+  - action: modified
+    file: ColoriseMap/src/cube_colourise.hpp
+    description: поля occlusion_max_depth/occlusion_ray_margin в CubeOptions
+  - action: modified
+    file: ColoriseMap/src/cube_colourise.cpp
+    description: маска «нет лучей» после слияния сеток + отбраковка в скоринге
+  - action: modified
+    file: ColoriseMap/src/main.cpp
+    description: CLI/usage/опции + передача в кадровый и кубовый режимы
+  - action: modified
+    file: configs/config.yaml
+    description: ключи occlusion_max_depth/occlusion_ray_margin с предупреждением
+  - action: modified
+    file: colorise/README.md
+    description: флаги, §5.2 про правило и чувствительность к плотности, §7/§8
+  - action: modified
+    file: ColoriseMap/README.md
+    description: флаги и описание правила
+  - action: modified
+    file: README.md
+    description: раздел Occlusion rejection — правило «нет лучей»
+  - action: modified
+    file: cline/clinerules.md
+    description: снят инвариант паритета с Python, §3 на фикстуру make_photo_plane
+  - action: modified
+    file: cline/Полезные наблюдения.md
+    description: наблюдение про правило и его чувствительность к плотности
+  - action: modified
+    file: CHANGELOG.md
+    description: запись итерации от 2026-10-01
+  - action: created
+    file: cline/iterations/2026-10-01/ITER-20261001-021955.yaml
+    description: файл итерации
+
+dependencies: []
+
+notes: >
+  Проверено: сборка colorise/ и ColoriseMap/; детерминизм --jobs 0 <-> --jobs 1
+  (cmp, кадровый и кубовый режимы); регресс старого пути — при выключенном правиле
+  (--occlusion-max-depth inf --occlusion-ray-margin 0) C++ побайтово совпадает с
+  замороженной Python-версией. Покрытие на фикстуре make_photo_plane.py (плоскость
+  5 м, cell 4): правило вкл. ppm 100 -> 0.00 %, ppm 1000 -> 39.04 %, ppm 5000 ->
+  99.42 % (выкл.: 99.44 / 99.92 / 99.96 %). export/ (артефакт, вне git) теперь
+  устарел относительно ядра — его golden/debug1 не пересчитывались.
+

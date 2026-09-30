@@ -237,6 +237,7 @@ private:
             projectAndSample(P3, candidates, img, cam, T_cam_from_lidar,
                              p_.occlusion_check, p_.occlusion_cell_px,
                              p_.occlusion_depth_tol,
+                             p_.occlusion_max_depth, p_.occlusion_ray_margin,
                              [&](int idx, std::uint32_t rgb) {
                                  sum[idx] += Eigen::Vector3i((rgb >> 16) & 0xFF,
                                                              (rgb >>  8) & 0xFF,

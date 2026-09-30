@@ -59,6 +59,7 @@ void projectAndSample(const Cloud& cloud, const std::vector<int>& cand,
                       double edge_margin, double max_view_angle_deg,
                       double min_camera_dist, bool occlusion,
                       double occlusion_cell_px, double occlusion_depth_tol,
+                      double occlusion_max_depth, int occlusion_ray_margin,
                       std::vector<uint32_t>& out_rgb, std::vector<int>& out_idx,
                       std::vector<double>& out_dist) {
     out_rgb.clear();
@@ -156,26 +157,68 @@ void projectAndSample(const Cloud& cloud, const std::vector<int>& cand,
         vv[k] = v;
         ok[k] = 1;
     }
-// Pass 3: z-buffer occlusion (Python np.minimum.at over grid cells).
-    if (occlusion) {
+// Pass 3: z-buffer — occlusion rejection plus the "no lidar rays" gate.
+    // The grid is built whenever either check is active.
+    const bool no_ray_gate = std::isfinite(occlusion_max_depth);
+    if (occlusion || no_ray_gate) {
         const double cell = std::max(1.0, occlusion_cell_px);
         const int gw = static_cast<int>(std::ceil(cam.width / cell));
         const int gh = static_cast<int>(std::ceil(cam.height / cell));
-        std::vector<double> zmin(static_cast<size_t>(gw) * gh,
+        const std::size_t ncells =
+            static_cast<std::size_t>(gw) * static_cast<std::size_t>(gh);
+        std::vector<double> zmin(ncells,
                                  std::numeric_limits<double>::infinity());
-        for (size_t k = 0; k < npts; ++k) {
-            if (!ok[k]) continue;
+        auto cellOf = [&](std::size_t k) {
             const int gx = static_cast<int>(uu[k] / cell);
             const int gy = static_cast<int>(vv[k] / cell);
-            double& z = zmin[static_cast<size_t>(gy) * gw + gx];
+            return static_cast<std::size_t>(gy) * gw + gx;
+        };
+        for (size_t k = 0; k < npts; ++k) {
+            if (!ok[k]) continue;
+            double& z = zmin[cellOf(k)];
             if (depth[k] < z) z = depth[k];
         }
-        for (size_t k = 0; k < npts; ++k) {
-            if (!ok[k]) continue;
-            const int gx = static_cast<int>(uu[k] / cell);
-            const int gy = static_cast<int>(vv[k] / cell);
-            const double zmin_cell = zmin[static_cast<size_t>(gy) * gw + gx];
-            if (depth[k] > zmin_cell + occlusion_depth_tol) ok[k] = 0;
+        if (occlusion) {
+            for (size_t k = 0; k < npts; ++k) {
+                if (!ok[k]) continue;
+                if (depth[k] > zmin[cellOf(k)] + occlusion_depth_tol) ok[k] = 0;
+            }
+        }
+        // "No lidar rays": a cell whose minimum depth is beyond the limit — or
+        // that received no point at all (min = +inf) — holds no lidar rays. The
+        // mask is dilated by occlusion_ray_margin cells (Chebyshev metric) so
+        // points next to such an area are dropped too, and any point landing in
+        // the dilated mask is not coloured.
+        if (no_ray_gate) {
+            std::vector<unsigned char> noray(ncells, 0);
+            for (std::size_t c = 0; c < ncells; ++c)
+                if (zmin[c] > occlusion_max_depth) noray[c] = 1;
+            if (occlusion_ray_margin > 0) {
+                const int N = occlusion_ray_margin;
+                std::vector<unsigned char> h(ncells, 0), v(ncells, 0);
+                for (int gy = 0; gy < gh; ++gy)
+                    for (int gx = 0; gx < gw; ++gx) {
+                        if (!noray[static_cast<std::size_t>(gy) * gw + gx])
+                            continue;
+                        const int x0 = std::max(0, gx - N);
+                        const int x1 = std::min(gw - 1, gx + N);
+                        for (int x = x0; x <= x1; ++x)
+                            h[static_cast<std::size_t>(gy) * gw + x] = 1;
+                    }
+                for (int gx = 0; gx < gw; ++gx)
+                    for (int gy = 0; gy < gh; ++gy) {
+                        if (!h[static_cast<std::size_t>(gy) * gw + gx]) continue;
+                        const int y0 = std::max(0, gy - N);
+                        const int y1 = std::min(gh - 1, gy + N);
+                        for (int y = y0; y <= y1; ++y)
+                            v[static_cast<std::size_t>(y) * gw + gx] = 1;
+                    }
+                noray.swap(v);
+            }
+            for (size_t k = 0; k < npts; ++k) {
+                if (!ok[k]) continue;
+                if (noray[cellOf(k)]) ok[k] = 0;
+            }
         }
     }
 

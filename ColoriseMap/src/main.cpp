@@ -83,6 +83,8 @@ struct MapOptions {
     bool        occlusion           = true;
     double      occlusion_cell_px   = 4.0;
     double      occlusion_depth_tol = 0.3;
+    double      occlusion_max_depth  = 40.0;  // --occlusion-max-depth
+    int         occlusion_ray_margin = 1;     // --occlusion-ray-margin
     bool        keep_uncolored      = false;
     double      max_time_offset     = 0.05;   // camera pairing tolerance, s
 
@@ -135,6 +137,8 @@ static void printUsage() {
         "  --occlusion / --no-occlusion                            [on]\n"
         "  --occlusion-cell <px>       z-buffer cell                 [4.0]\n"
         "  --occlusion-depth-tol <m>   z-buffer tolerance            [0.3]\n"
+        "  --occlusion-max-depth <m>   no-lidar-rays depth gate      [40.0]\n"
+        "  --occlusion-ray-margin <n>  dilate that mask, cells       [1]\n"
         "  --keep-uncolored            write uncoloured points as black\n"
         "  --nearest-wins              colour each point only from the nearest camera\n"
         "  --cube <m>                  cube mode: 1 m buckets + per-point gps_time\n"
@@ -232,6 +236,13 @@ static bool parseArgs(int argc, char** argv, MapOptions& o) {
             o.occlusion_cell_px = parseDoubleValue(value(key).c_str(), key);
         else if (key == "--occlusion-depth-tol")
             o.occlusion_depth_tol = parseDoubleValue(value(key).c_str(), key);
+        else if (key == "--occlusion-max-depth")
+            o.occlusion_max_depth = parseDoubleValue(value(key).c_str(), key);
+        else if (key == "--occlusion-ray-margin") {
+            o.occlusion_ray_margin = parseLongValue(value(key).c_str(), key);
+            if (o.occlusion_ray_margin < 0)
+                throw std::runtime_error("--occlusion-ray-margin must be >= 0");
+        }
         else if (key == "--keep-uncolored") o.keep_uncolored = true;
         else if (key == "--nearest-wins") o.nearest_wins = true;
         else if (key == "--cube")
@@ -649,6 +660,7 @@ auto worker = [&]() {
                     projectAndSample(cloud, cand_ref, img, cams[c], Tc,
                                      o.edge_margin, o.max_view_angle_deg, o.min_camera_dist,
                                      o.occlusion, o.occlusion_cell_px, o.occlusion_depth_tol,
+                                     o.occlusion_max_depth, o.occlusion_ray_margin,
                                      rgb, idx, dist);
                     res.rgb.insert(res.rgb.end(), rgb.begin(), rgb.end());
                     res.idx.insert(res.idx.end(), idx.begin(), idx.end());
@@ -754,6 +766,8 @@ static int runCube(const MapOptions& o, const CameraSpec& cam) {
     c.occlusion           = o.occlusion;
     c.occlusion_cell_px   = o.occlusion_cell_px;
     c.occlusion_depth_tol = o.occlusion_depth_tol;
+    c.occlusion_max_depth  = o.occlusion_max_depth;
+    c.occlusion_ray_margin = o.occlusion_ray_margin;
     c.min_camera_dist     = o.min_camera_dist;
     c.max_view_angle_deg  = o.max_view_angle_deg;
     c.max_range           = o.map_max_range;

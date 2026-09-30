@@ -66,6 +66,8 @@ void loadCommonParams(const std::string& config_path, CommonParams& p) {
     p.occlusion_check     = get<bool>  (cfg, "occlusion_check",     true);
     p.occlusion_cell_px   = get<double>(cfg, "occlusion_cell_px",   4.0);
     p.occlusion_depth_tol = get<double>(cfg, "occlusion_depth_tol", 0.3);
+    p.occlusion_max_depth  = get<double>(cfg, "occlusion_max_depth",  40.0);
+    p.occlusion_ray_margin = get<int>   (cfg, "occlusion_ray_margin", 1);
 
     p.map_pcd_path     = expandRosPath(get<std::string>(cfg, "map_pcd_path",  ""));
     p.odom_csv_path    = expandRosPath(get<std::string>(cfg, "odom_csv_path", ""));
@@ -157,6 +159,8 @@ void projectAndSample(const std::vector<cv::Point3f>& P3,
                       bool                            occlusion_check,
                       double                          occlusion_cell_px,
                       double                          occlusion_depth_tol,
+                      double                          occlusion_max_depth,
+                      int                             occlusion_ray_margin,
                       const std::function<void(int, std::uint32_t)>& sink) {
     if (img.empty()) return;
 
@@ -234,27 +238,69 @@ void projectAndSample(const std::vector<cv::Point3f>& P3,
     }
 
     // Pass 3: z-buffer. Without this, a wall and everything behind it land on
-    // the same pixels and all get painted with the wall's colour.
-    if (occlusion_check) {
+    // the same pixels and all get painted with the wall's colour. The grid is
+    // also the source of the "no lidar rays" mask (see below).
+    const bool no_ray_gate = std::isfinite(occlusion_max_depth);
+    if (occlusion_check || no_ray_gate) {
         const double cell = std::max(1.0, occlusion_cell_px);
         const int gw = static_cast<int>(std::ceil(cam.width  / cell));
         const int gh = static_cast<int>(std::ceil(cam.height / cell));
-        std::vector<float> zbuf(static_cast<size_t>(gw) * gh,
-                                std::numeric_limits<float>::infinity());
+        const std::size_t ncells =
+            static_cast<std::size_t>(gw) * static_cast<std::size_t>(gh);
+        std::vector<float> zbuf(ncells, std::numeric_limits<float>::infinity());
+        auto cellOf = [&](std::size_t k) {
+            const int gx = static_cast<int>(uu[k] / cell);
+            const int gy = static_cast<int>(vv[k] / cell);
+            return static_cast<std::size_t>(gy) * gw + gx;
+        };
 
         for (size_t k = 0; k < P2.size(); ++k) {
             if (!ok[k]) continue;
-            const int gx = static_cast<int>(uu[k] / cell);
-            const int gy = static_cast<int>(vv[k] / cell);
-            float& z = zbuf[static_cast<size_t>(gy) * gw + gx];
+            float& z = zbuf[cellOf(k)];
             z = std::min(z, depths[k]);
         }
-        for (size_t k = 0; k < P2.size(); ++k) {
-            if (!ok[k]) continue;
-            const int gx = static_cast<int>(uu[k] / cell);
-            const int gy = static_cast<int>(vv[k] / cell);
-            const float zmin = zbuf[static_cast<size_t>(gy) * gw + gx];
-            if (depths[k] > zmin + occlusion_depth_tol) ok[k] = false;
+        if (occlusion_check) {
+            for (size_t k = 0; k < P2.size(); ++k) {
+                if (!ok[k]) continue;
+                const float zmin = zbuf[cellOf(k)];
+                if (depths[k] > zmin + occlusion_depth_tol) ok[k] = false;
+            }
+        }
+        // "No lidar rays": a cell whose minimum depth is beyond the limit — or
+        // that received no point at all (min = +inf) — holds no lidar rays. The
+        // mask is dilated by occlusion_ray_margin cells (Chebyshev metric) and
+        // any point landing in the dilated mask is not coloured.
+        if (no_ray_gate) {
+            std::vector<unsigned char> noray(ncells, 0);
+            for (std::size_t c = 0; c < ncells; ++c)
+                if (static_cast<double>(zbuf[c]) > occlusion_max_depth)
+                    noray[c] = 1;
+            if (occlusion_ray_margin > 0) {
+                const int N = occlusion_ray_margin;
+                std::vector<unsigned char> h(ncells, 0), v(ncells, 0);
+                for (int gy = 0; gy < gh; ++gy)
+                    for (int gx = 0; gx < gw; ++gx) {
+                        if (!noray[static_cast<std::size_t>(gy) * gw + gx])
+                            continue;
+                        const int x0 = std::max(0, gx - N);
+                        const int x1 = std::min(gw - 1, gx + N);
+                        for (int x = x0; x <= x1; ++x)
+                            h[static_cast<std::size_t>(gy) * gw + x] = 1;
+                    }
+                for (int gx = 0; gx < gw; ++gx)
+                    for (int gy = 0; gy < gh; ++gy) {
+                        if (!h[static_cast<std::size_t>(gy) * gw + gx]) continue;
+                        const int y0 = std::max(0, gy - N);
+                        const int y1 = std::min(gh - 1, gy + N);
+                        for (int y = y0; y <= y1; ++y)
+                            v[static_cast<std::size_t>(y) * gw + gx] = 1;
+                    }
+                noray.swap(v);
+            }
+            for (size_t k = 0; k < P2.size(); ++k) {
+                if (!ok[k]) continue;
+                if (noray[cellOf(k)]) ok[k] = false;
+            }
         }
     }
 

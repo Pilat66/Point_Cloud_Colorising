@@ -34,6 +34,13 @@ struct Options {
     bool   occlusion           = true;
     double occlusion_cell_px   = 4.0;
     double occlusion_depth_tol = 0.3;
+    // "No lidar rays" gate. A z-buffer cell is marked when its minimum depth
+    // exceeds occlusion_max_depth (empty cells, min = +inf, also qualify). The
+    // mask is dilated by occlusion_ray_margin cells and any point landing in the
+    // dilated mask is not coloured: those areas hold no lidar rays, so the
+    // colour sampled there would come from a different surface.
+    double occlusion_max_depth  = 40.0;
+    int    occlusion_ray_margin = 1;
     int    min_color_frames    = 1;
     bool   keep_uncolored      = false;
     bool   first_wins          = false;
@@ -189,5 +196,6 @@ void projectAndSample(const Cloud& cloud, const std::vector<int>& cand,
                       double edge_margin, double max_view_angle_deg,
                       double min_camera_dist, bool occlusion,
                       double occlusion_cell_px, double occlusion_depth_tol,
+                      double occlusion_max_depth, int occlusion_ray_margin,
                       std::vector<uint32_t>& out_rgb, std::vector<int>& out_idx,
                       std::vector<double>& out_dist);

@@ -34,6 +34,9 @@ struct CubeOptions {
     bool   occlusion            = true;
     double occlusion_cell_px    = 1.0;   // --occlusion-cell
     double occlusion_depth_tol  = 0.03;  // --occlusion-depth-tol
+    // --occlusion-max-depth / --occlusion-ray-margin: «нет лидарных лучей».
+    double occlusion_max_depth  = 40.0;
+    int    occlusion_ray_margin = 1;
     double min_camera_dist      = 0.5;   // --min-camera-dist
     double max_view_angle_deg   = 75.0;  // --max-view-angle
     double max_range            = 0.0;   // --map-max-range (0 = без отсечки)

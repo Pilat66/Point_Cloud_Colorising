@@ -104,6 +104,12 @@ struct CommonParams {
     bool   occlusion_check     = true;
     double occlusion_cell_px   = 4.0;
     double occlusion_depth_tol = 0.3;
+    // "No lidar rays" gate: z-buffer cells whose minimum depth exceeds
+    // occlusion_max_depth (empty cells, min = +inf, also qualify) are marked,
+    // the mask is dilated by occlusion_ray_margin cells and points landing in
+    // the dilated mask are not coloured.
+    double occlusion_max_depth  = 40.0;
+    int    occlusion_ray_margin = 1;
 
     // Map node
     std::string map_pcd_path;
@@ -142,6 +148,8 @@ void projectAndSample(const std::vector<cv::Point3f>& P3,
                       bool                            occlusion_check,
                       double                          occlusion_cell_px,
                       double                          occlusion_depth_tol,
+                      double                          occlusion_max_depth,
+                      int                             occlusion_ray_margin,
                       const std::function<void(int, std::uint32_t)>& sink);
 
 // ─────────────────────────────────────────────────────────────────────────────

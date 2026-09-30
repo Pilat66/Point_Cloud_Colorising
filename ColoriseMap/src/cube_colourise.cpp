@@ -293,6 +293,7 @@ int runCubeColourise(const CubeOptions& o) {
     const double cell     = std::max(1.0, o.occlusion_cell_px);
     const int    gw       = static_cast<int>(std::ceil(cam.width / cell));
     const int    gh       = static_cast<int>(std::ceil(cam.height / cell));
+    const bool   no_ray_gate = std::isfinite(o.occlusion_max_depth);
     const Proj   proj     = Proj::from(cam);
 
     std::vector<uint32_t> seen;                     // кубы в конусе кадра
@@ -303,6 +304,10 @@ int runCubeColourise(const CubeOptions& o) {
     std::vector<std::vector<float>> grid_thread(
         static_cast<std::size_t>(njobs), std::vector<float>(ncells));
     std::vector<float> zmin(ncells);
+    // Маска «нет лидарных лучей» (ячейки с минимальной глубиной > предела или
+    // пустые), расширенная на occlusion_ray_margin ячеек; строится один раз на
+    // кадр после слияния сеток и только читается в параллельном скоринге.
+    std::vector<unsigned char> noray(ncells, 0);
     long long frame_coloured_total = 0;
 
     for (std::size_t fi = 0; fi < frames.size(); ++fi) {
@@ -336,7 +341,7 @@ int runCubeColourise(const CubeOptions& o) {
         for (const auto& v : per_thread) seen.insert(seen.end(), v.begin(), v.end());
 
         // (b) z-буфер кадра: минимальная глубина на ячейку (по всем видимым точкам)
-        if (o.occlusion) {
+        if (o.occlusion || no_ray_gate) {
             for (auto& g : grid_thread)
                 std::fill(g.begin(), g.end(), std::numeric_limits<float>::infinity());
             parallelDynamic(seen.size(), njobs, 64, [&](int tid, std::size_t lo, std::size_t hi) {
@@ -369,6 +374,38 @@ int runCubeColourise(const CubeOptions& o) {
             for (std::size_t t = 1; t < grid_thread.size(); ++t)
                 for (std::size_t c = 0; c < ncells; ++c)
                     if (grid_thread[t][c] < zmin[c]) zmin[c] = grid_thread[t][c];
+
+            // Маска «нет лучей»: ячейки, где минимальная глубина больше предела
+            // (или куда не попала ни одна точка, min = +inf), затем расширение
+            // на occlusion_ray_margin ячеек (метрика Чебышёва, разделяемо).
+            std::fill(noray.begin(), noray.end(), 0);
+            if (no_ray_gate) {
+                for (std::size_t c = 0; c < ncells; ++c)
+                    if (static_cast<double>(zmin[c]) > o.occlusion_max_depth)
+                        noray[c] = 1;
+                if (o.occlusion_ray_margin > 0) {
+                    const int N = o.occlusion_ray_margin;
+                    std::vector<unsigned char> h(ncells, 0), v(ncells, 0);
+                    for (int gy = 0; gy < gh; ++gy)
+                        for (int gx = 0; gx < gw; ++gx) {
+                            if (!noray[static_cast<std::size_t>(gy) * gw + gx])
+                                continue;
+                            const int x0 = std::max(0, gx - N);
+                            const int x1 = std::min(gw - 1, gx + N);
+                            for (int x = x0; x <= x1; ++x)
+                                h[static_cast<std::size_t>(gy) * gw + x] = 1;
+                        }
+                    for (int gx = 0; gx < gw; ++gx)
+                        for (int gy = 0; gy < gh; ++gy) {
+                            if (!h[static_cast<std::size_t>(gy) * gw + gx]) continue;
+                            const int y0 = std::max(0, gy - N);
+                            const int y1 = std::min(gh - 1, gy + N);
+                            for (int y = y0; y <= y1; ++y)
+                                v[static_cast<std::size_t>(y) * gw + gx] = 1;
+                        }
+                    noray.swap(v);
+                }
+            }
         }
 
         // (c) скоринг: цвет от кадра с минимальным баллом, без усреднения
@@ -394,12 +431,14 @@ int runCubeColourise(const CubeOptions& o) {
                     const int iu = static_cast<int>(std::nearbyint(u));
                     const int iv = static_cast<int>(std::nearbyint(v));
                     if (iu < 0 || iu >= cam.width || iv < 0 || iv >= cam.height) continue;
-                    if (o.occlusion) {
+                    if (o.occlusion || no_ray_gate) {
                         const std::size_t c = static_cast<std::size_t>(iv / cell) * gw +
                                               static_cast<std::size_t>(iu / cell);
-                        if (static_cast<float>(pc.z()) >
-                            zmin[c] + static_cast<float>(o.occlusion_depth_tol))
+                        if (o.occlusion &&
+                            static_cast<float>(pc.z()) >
+                                zmin[c] + static_cast<float>(o.occlusion_depth_tol))
                             continue;
+                        if (no_ray_gate && noray[c]) continue;
                     }
                     const double score = term_t +
                         o.score_w_dist * std::min(1.0, d3 / o.score_d_ref);
