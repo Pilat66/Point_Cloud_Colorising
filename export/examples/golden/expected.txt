@@ -1,0 +1,13 @@
+# Ожидаемые значения прогона примера (см. README.md в этом каталоге).
+# Строки key=value; читается tests/smoke.sh.
+total=269487
+coloured=66986
+cubes=6778
+frames=3
+photos=3
+map_points=269487
+traj_poses=300
+window_lo=1789476757.441
+window_hi=1789476758.935
+sha256_las=249b9fa15a77eded2e7db292e06e582fc3c8ced52aa46052749480cde3004b03
+sha256_debug1=b3933cb401ed7d1b50c43e97ec8b91d9288712fbd5c9438ba323fdd59e8720db

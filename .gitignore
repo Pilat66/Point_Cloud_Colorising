@@ -33,4 +33,4 @@ __pycache__/
 # ColoriseMap/src плюс документы и мини-пример данных). Артефакт передачи,
 # а не второй источник кода: исходники остаются только в репозитории, а
 # трассируемость обеспечивает export/MANIFEST.md (коммит + sha256 файлов).
-/export/
+/export/Point_Cloud_Colorising.code-workspace
